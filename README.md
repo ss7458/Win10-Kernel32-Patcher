@@ -34,7 +34,7 @@
 
 | 软件名称     | 版本       | 是否修复成功 | 备注 |
 |--------------|------------|--------------|------|
-| OpenCode    | 1.15.10     | ✅ 已修复     | 启动后需等待约 5 分钟（日志显示会读取被锁的文件直到300秒超时后才能出现交互界面，(日志位置)） |
+| OpenCode    | 1.15.10     | ✅ 已修复     | 启动后需等待约 5 分钟 |
 | Kilo.exe    | 7.xx.xx         | ✅ 已修复     | 完全正常运行 |
 
 > **OpenCode 已知问题**：首次启动时仍然需要等待约 **5 分钟** 才能正常进入界面通过日志.local\share\opencode\log分析，是因为程序会读取 `.cache\opencode\models.json` 直到超时结束"Timed out waiting for lock: models-dev:...\models.json"。
