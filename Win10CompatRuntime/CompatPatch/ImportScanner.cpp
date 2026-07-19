@@ -27,8 +27,9 @@ std::vector<ImportEntry> ScanImports(void* fileBase, IMAGE_NT_HEADERS* nt)
         {
             ImportEntry ie;
             ie.moduleName = moduleName;
-            ie.thunkRVA = (uint32_t)((uint8_t*)ftEntry - (uint8_t*)fileBase);
-            ie.origThunkRVA = (uint32_t)((uint8_t*)oftEntry - (uint8_t*)fileBase);
+            // Store true RVAs (not file offsets) for the thunk locations.
+            ie.thunkRVA = pe::FileOffsetToRva(nt, (uint32_t)((uint8_t*)ftEntry - (uint8_t*)fileBase));
+            ie.origThunkRVA = pe::FileOffsetToRva(nt, (uint32_t)((uint8_t*)oftEntry - (uint8_t*)fileBase));
 
             if (IMAGE_SNAP_BY_ORDINAL(oftEntry->u1.Ordinal))
             {

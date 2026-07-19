@@ -26,7 +26,7 @@ COMPAT_API LPVOID WINAPI VirtualAlloc2(HANDLE Process, PVOID BaseAddress, SIZE_T
         if (ExtendedParameters[i].Type == 1) // MemExtendedParameterNumaNode
         {
             hasNuma = TRUE;
-            numaNode = (DWORD)ExtendedParameters[i].Pointer.Value;
+            numaNode = (DWORD)(DWORD_PTR)ExtendedParameters[i].Pointer;
             break;
         }
     }
@@ -51,10 +51,13 @@ COMPAT_API LPVOID WINAPI VirtualAlloc2(HANDLE Process, PVOID BaseAddress, SIZE_T
 // MapViewOfFile3 - L2 (fallback to MapViewOfFile)
 // Introduced: Win10 1803 (build 17134)
 // ============================================================
-COMPAT_API LPVOID WINAPI MapViewOfFile3(HANDLE FileMapping, HANDLE Process, PVOID BaseAddress,
-    SIZE_T RegionSize, ULONG AllocationType, DWORD Protect, MEM_EXTENDED_PARAMETER* ExtendedParameters, ULONG ParameterCount)
+COMPAT_API PVOID WINAPI MapViewOfFile3(HANDLE FileMapping, HANDLE Process, PVOID BaseAddress,
+    ULONG64 Offset, SIZE_T ViewSize, ULONG AllocationType, DWORD Protect, MEM_EXTENDED_PARAMETER* ExtendedParameters, ULONG ParameterCount)
 {
-    // Most parameters map directly to MapViewOfFile; allocation type
+    (void)Process;
+    (void)ExtendedParameters;
+    (void)ParameterCount;
+    // Most parameters map directly to MapViewOfFileEx; allocation type
     // and extended parameters are best-effort.
     if (AllocationType & (MEM_REPLACE_PLACEHOLDER | MEM_RESERVE_PLACEHOLDER))
     {
@@ -65,7 +68,9 @@ COMPAT_API LPVOID WINAPI MapViewOfFile3(HANDLE FileMapping, HANDLE Process, PVOI
     if (Protect == PAGE_READWRITE) viewAccess = FILE_MAP_WRITE;
     else if (Protect == PAGE_EXECUTE_READ) viewAccess = FILE_MAP_EXECUTE;
     else if (Protect == PAGE_EXECUTE_READWRITE) viewAccess = FILE_MAP_ALL_ACCESS;
-    return MapViewOfFileEx(FileMapping, viewAccess, 0, 0, RegionSize, BaseAddress);
+    DWORD offsetLow = (DWORD)(Offset & 0xFFFFFFFF);
+    DWORD offsetHigh = (DWORD)(Offset >> 32);
+    return MapViewOfFileEx(FileMapping, viewAccess, offsetLow, offsetHigh, ViewSize, BaseAddress);
 }
 
 // ============================================================

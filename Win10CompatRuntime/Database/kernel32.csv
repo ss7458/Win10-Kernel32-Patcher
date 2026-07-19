@@ -16,7 +16,6 @@ kernel32,RemoveDllDirectory,14393,L0,Runtime,Compat_RemoveDllDirectory
 kernel32,SetDefaultDllDirectories,14393,L0,Runtime,Compat_SetDefaultDllDirectories
 kernel32,GetDpiForWindow,14393,L1,Runtime,Compat_GetDpiForWindow
 kernel32,GetDpiForSystem,14393,L1,Runtime,Compat_GetDpiForSystem
-kernel32,SetProcessDpiAwarenessContext,15063,L3,Runtime,Compat_SetProcessDpiAwarenessContext
 kernel32,EnableNonClientDpiScaling,14393,L3,Runtime,Compat_EnableNonClientDpiScaling
 kernel32,InitializeConditionVariable,14393,L0,Runtime,Compat_InitializeConditionVariable
 kernel32,WakeConditionVariable,14393,L0,Runtime,Compat_WakeConditionVariable

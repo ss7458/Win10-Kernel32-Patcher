@@ -29,10 +29,14 @@
 
 // Export macro: every compat API uses this so the linker emits the export.
 #ifdef COMPATRUNTIME_EXPORTS
-#define COMPAT_API __declspec(dllexport)
+#define COMPAT_API extern "C" __declspec(dllexport)
 #else
-#define COMPAT_API
+#define COMPAT_API extern "C"
 #endif
+
+// Benign: we intentionally redefine some Windows APIs with dllexport
+// while the SDK headers declare them with dllimport.
+#pragma warning(disable: 4273)
 
 // Compatibility level documentation (informational, not enforced at runtime).
 //   L0 - Full compatibility: 100% faithful implementation.

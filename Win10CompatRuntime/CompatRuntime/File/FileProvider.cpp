@@ -52,7 +52,6 @@ COMPAT_API BOOL WINAPI GetFileInformationByHandleEx(HANDLE hFile, FILE_INFO_BY_H
         out->ChangeTime.LowPart = info.ftLastWriteTime.dwLowDateTime;
         out->ChangeTime.HighPart = info.ftLastWriteTime.dwHighDateTime;
         out->FileAttributes = info.dwFileAttributes;
-        out->Reserved0 = 0; out->Reserved1 = 0;
         return TRUE;
     }
     case 4: // FileStandardInfo

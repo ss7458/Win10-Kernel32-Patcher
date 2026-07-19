@@ -31,7 +31,7 @@ COMPAT_API HRESULT WINAPI GetThreadDescription(HANDLE hThread, PWSTR* ppszThread
 // SetThreadInformation - L2 (dispatch by class)
 // Introduced: Win10 1607 (build 14393)
 // ============================================================
-COMPAT_API BOOL WINAPI SetThreadInformation(HANDLE hThread, DWORD ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize)
+COMPAT_API BOOL WINAPI SetThreadInformation(HANDLE hThread, THREAD_INFORMATION_CLASS ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize)
 {
     switch (ThreadInformationClass)
     {
@@ -67,7 +67,7 @@ COMPAT_API BOOL WINAPI SetThreadInformation(HANDLE hThread, DWORD ThreadInformat
 // GetThreadInformation - L2 (dispatch by class)
 // Introduced: Win10 1607 (build 14393)
 // ============================================================
-COMPAT_API BOOL WINAPI GetThreadInformation(HANDLE hThread, DWORD ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize)
+COMPAT_API BOOL WINAPI GetThreadInformation(HANDLE hThread, THREAD_INFORMATION_CLASS ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize)
 {
     switch (ThreadInformationClass)
     {

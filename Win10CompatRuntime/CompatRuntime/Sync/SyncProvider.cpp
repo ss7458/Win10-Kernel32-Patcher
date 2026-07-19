@@ -70,7 +70,7 @@ COMPAT_API BOOL WINAPI SleepConditionVariableCS(PCONDITION_VARIABLE ConditionVar
 // SleepConditionVariableSRW - L0 (real implementation)
 // ============================================================
 COMPAT_API BOOL WINAPI SleepConditionVariableSRW(PCONDITION_VARIABLE ConditionVariable,
-    PPSRWLOCK SRWLock, DWORD dwMilliseconds, ULONG Flags)
+    PSRWLOCK SRWLock, DWORD dwMilliseconds, ULONG Flags)
 {
     if (!ConditionVariable || !ConditionVariable->Ptr || !SRWLock)
     {

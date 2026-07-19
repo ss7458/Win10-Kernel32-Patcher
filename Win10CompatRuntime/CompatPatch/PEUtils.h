@@ -49,18 +49,39 @@ inline bool WriteFile(const char* path, const std::vector<uint8_t>& data)
 }
 
 // Helper: convert an RVA to a file offset given the section table.
+// Use SizeOfRawData as the upper bound: the file offset is derived from the
+// on-disk initialized data. (VirtualSize may be smaller than SizeOfRawData when
+// raw data extends past the declared virtual size, e.g. for .rdata holding the
+// import table.)
 inline uint32_t RvaToFileOffset(IMAGE_NT_HEADERS* nt, uint32_t rva)
 {
     IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
     for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++)
     {
+        DWORD rawEnd = sec[i].PointerToRawData + sec[i].SizeOfRawData;
         if (rva >= sec[i].VirtualAddress &&
-            rva < sec[i].VirtualAddress + sec[i].Misc.VirtualSize)
+            rva < sec[i].VirtualAddress + sec[i].SizeOfRawData &&
+            (sec[i].PointerToRawData + (rva - sec[i].VirtualAddress)) < rawEnd)
         {
             return (rva - sec[i].VirtualAddress) + sec[i].PointerToRawData;
         }
     }
     return 0;
+}
+
+// Helper: convert a file offset to an RVA given the section table.
+inline uint32_t FileOffsetToRva(IMAGE_NT_HEADERS* nt, uint32_t fileOffset)
+{
+    IMAGE_SECTION_HEADER* sec = IMAGE_FIRST_SECTION(nt);
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++)
+    {
+        DWORD rawEnd = sec[i].PointerToRawData + sec[i].SizeOfRawData;
+        if (fileOffset >= sec[i].PointerToRawData && fileOffset < rawEnd)
+        {
+            return (fileOffset - sec[i].PointerToRawData) + sec[i].VirtualAddress;
+        }
+    }
+    return fileOffset; // best effort
 }
 
 // Get a pointer into the loaded image buffer at an RVA.

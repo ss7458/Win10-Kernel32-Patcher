@@ -1,26 +1,26 @@
+# Build output
 build/
 out/
-Debug/
-Release/
-x64/
-x86/
-*.obj
-*.pdb
-*.ilk
-*.exp
-*.lib
-*.dll
-*.exe
-.vs/
-.vscode/
-*.suo
-*.user
-CMakeFiles/
-CMakeCache.txt
-cmake_install.cmake
-compile_commands.json
-Thumbs.db
-Desktop.ini
+bin/
+
+# Scratch / debug helpers
+fix*.py
+gen_*.py
+patched_*.txt
+pe_inspect.txt
+*.bak
+*.patched
+
+# Python cache
 __pycache__/
 *.pyc
-*.bak
+
+# Compiled binaries / objects
+*.exe
+*.obj
+*.dll
+build_test*.bat
+
+# OS
+Thumbs.db
+.DS_Store

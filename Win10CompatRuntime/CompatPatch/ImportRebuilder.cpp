@@ -1,19 +1,37 @@
 // ImportRebuilder.cpp - Import table patching implementation.
+//
+// Correct redirection strategy (preserves IAT locations, works for any number
+// of APIs across any modules):
+//   For each redirected API we create ONE new IMAGE_IMPORT_DESCRIPTOR for
+//   "CompatRuntime.dll". Its FirstThunk points DIRECTLY at the original IAT
+//   slot of that API, and its OriginalFirstThunk points at a private 1-entry
+//   ILT that names the API. The Windows loader then resolves the API from
+//   CompatRuntime.dll and writes the address into the SAME original IAT slot.
+//   Because the program's call sites reference the original IAT addresses, no
+//   code modification is needed.
+//
+//   To stop the loader from also resolving the API from the original module
+//   (which would fail on an older OS), we null out both the ILT and IAT
+//   thunks of the original descriptor entry.
 
 #include "ImportRebuilder.h"
 #include <cstdio>
+#include <vector>
+#include <string>
+#include <algorithm>
+#include <cstring>
 
 static bool IsAPIRedirected(const std::string& module, const std::string& api,
     const std::vector<std::pair<std::string, std::string>>& list)
 {
+    std::string modLower = module;
+    for (auto& c : modLower) c = (char)tolower((unsigned char)c);
     for (auto& p : list)
     {
-        // Case-insensitive comparison for module name, exact for API name.
-        std::string modLower = module;
-        for (auto& c : modLower) c = (char)tolower((unsigned char)c);
         std::string dbModLower = p.first;
         for (auto& c : dbModLower) c = (char)tolower((unsigned char)c);
         if (modLower == dbModLower && api == p.second) return true;
+        if (modLower.find(dbModLower) != std::string::npos && api == p.second) return true;
     }
     return false;
 }
@@ -43,45 +61,6 @@ PatchResult PatchImports(
         return result;
     }
 
-    // 1. Scan existing imports to find which APIs need redirection.
-    auto imports = ScanImports(fileData.data(), nt);
-    auto delayImports = ScanDelayImports(fileData.data(), nt);
-
-    // Merge delay imports with a flag.
-    struct FullImportEntry : ImportEntry { bool isDelay; };
-    std::vector<FullImportEntry> allImports;
-    for (auto& ie : imports) { FullImportEntry fi; fi = ie; fi.isDelay = false; allImports.push_back(fi); }
-    for (auto& ie : delayImports) { FullImportEntry fi; fi = ie; fi.isDelay = true; allImports.push_back(fi); }
-
-    // 2. Identify which imports to redirect.
-    std::vector<FullImportEntry> toRedirect;
-    for (auto& ie : allImports)
-    {
-        if (ie.isByName && IsAPIRedirected(ie.moduleName, ie.apiName, redirectedAPIs))
-        {
-            toRedirect.push_back(ie);
-        }
-    }
-
-    if (toRedirect.empty())
-    {
-        result.errorMessage = "No matching APIs found in import table";
-        return result;
-    }
-
-    // 3. Collect unique API names to redirect.
-    std::vector<std::pair<std::string, std::string>> uniqueRedirects;
-    for (auto& ie : toRedirect)
-    {
-        bool found = false;
-        for (auto& ur : uniqueRedirects)
-        {
-            if (ur.first == ie.moduleName && ur.second == ie.apiName) { found = true; break; }
-        }
-        if (!found) uniqueRedirects.push_back({ie.moduleName, ie.apiName});
-    }
-
-    // 4. Find the import directory.
     auto* importDir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
     if (importDir->VirtualAddress == 0 || importDir->Size == 0)
     {
@@ -89,296 +68,224 @@ PatchResult PatchImports(
         return result;
     }
 
-    // 5. Count existing descriptors.
+    // 1. Scan imports to find redirected APIs and their IAT/ILT locations.
+    auto imports = ScanImports(fileData.data(), nt);
+
+    struct RedirectTarget {
+        uint32_t iatRVA;     // RVA of the original IAT entry (loader writes here)
+        uint32_t iatFileOff;  // file offset of the original IAT entry (to null it)
+        uint32_t iltFileOff;  // file offset of the original ILT entry (to null it)
+        std::string apiName;
+    };
+    std::vector<RedirectTarget> targets;
+
+    for (auto& ie : imports)
+    {
+        if (ie.isByName && IsAPIRedirected(ie.moduleName, ie.apiName, redirectedAPIs))
+        {
+            RedirectTarget t;
+            t.iatRVA = ie.thunkRVA;
+            t.iatFileOff = pe::RvaToFileOffset(nt, ie.thunkRVA);
+            t.iltFileOff = pe::RvaToFileOffset(nt, ie.origThunkRVA);
+            t.apiName = ie.apiName;
+            targets.push_back(t);
+        }
+    }
+
+    if (targets.empty())
+    {
+        result.errorMessage = "No matching APIs found in import table";
+        return result;
+    }
+
+    // Locate the original import descriptor array (used by step 2 and step 3).
     auto* origDesc = pe::RvaPtr<IMAGE_IMPORT_DESCRIPTOR>(fileData.data(), nt, importDir->VirtualAddress);
-    if (!origDesc) { result.errorMessage = "Cannot read import descriptors"; return result; }
+    if (!origDesc)
+    {
+        result.errorMessage = "Cannot locate import descriptor array";
+        return result;
+    }
 
-    int descCount = 0;
-    for (auto* d = origDesc; d->FirstThunk != 0; d++) descCount++;
+    // 2. Retarget each original ILT entry to a "decoy" name (an API the
+    //    original module always exports, e.g. that descriptor's first import).
+    //    We must NOT zero the entry: a zero ILT entry in the middle of a
+    //    descriptor truncates the loader's import walk and leaves later IAT
+    //    slots (e.g. GetCurrentThreadId) unresolved -> crash. By pointing the
+    //    entry at a valid decoy, the loader still resolves something from the
+    //    original module on EVERY OS, then the CompatRuntime descriptor
+    //    (processed after, same IAT slot) overwrites it with the real
+    //    compatibility implementation.
+    for (auto& t : targets)
+    {
+        // Locate the descriptor that owns this IAT slot.
+        IMAGE_IMPORT_DESCRIPTOR* owner = nullptr;
+        for (auto* d = origDesc; d->FirstThunk != 0; d++)
+        {
+            uint32_t oftRVA = d->OriginalFirstThunk ? d->OriginalFirstThunk : d->FirstThunk;
+            auto* oftEntry = pe::RvaPtr<IMAGE_THUNK_DATA>(fileData.data(), nt, oftRVA);
+            auto* ftEntry = pe::RvaPtr<IMAGE_THUNK_DATA>(fileData.data(), nt, d->FirstThunk);
+            if (!oftEntry || !ftEntry) continue;
+            for (; oftEntry->u1.AddressOfData != 0; oftEntry++, ftEntry++)
+            {
+                if ((uint8_t*)ftEntry - fileData.data() == t.iatFileOff)
+                {
+                    owner = d;
+                    break;
+                }
+            }
+            if (owner) break;
+        }
+        if (!owner) continue;
 
-    // 6. Build new import data:
-    //    - Modified descriptors (original minus redirected APIs)
-    //    - New descriptor for CompatRuntime.dll
-    //    - Thunk arrays for each original descriptor (with redirected APIs removed)
-    //    - New thunk array + name strings for CompatRuntime
-    //
-    // For simplicity, we take a different approach:
-    //   We append a new section ".compat" with:
-    //   - One new IMAGE_IMPORT_DESCRIPTOR for "CompatRuntime.dll"
-    //   - IMAGE_THUNK_DATA array for CompatRuntime's imports
-    //   - IMAGE_IMPORT_BY_NAME entries for each redirected API
-    //   - The DLL name string "CompatRuntime.dll"
-    //   - API name strings
-    //
-    // We also update the original descriptors to NULL out the redirected
-    // thunks (so they don't cause "entry point not found" errors).
-    //
-    // Actually, the cleanest approach: just append a new section with new
-    // descriptors and update the data directory to encompass both old and new.
+        // Decoy: reuse the owner descriptor's first ILT name (a valid export
+        // of the original module on all supported OSes).
+        uint32_t decoyOftRVA = owner->OriginalFirstThunk ? owner->OriginalFirstThunk : owner->FirstThunk;
+        auto* decoyOft = pe::RvaPtr<IMAGE_THUNK_DATA>(fileData.data(), nt, decoyOftRVA);
+        if (!decoyOft || decoyOft->u1.AddressOfData == 0) continue;
+        uint32_t decoyNameRVA = (uint32_t)decoyOft->u1.AddressOfData;
 
-    // Calculate sizes for new section content.
+        if (t.iltFileOff)
+        {
+            auto* oft = reinterpret_cast<IMAGE_THUNK_DATA*>(fileData.data() + t.iltFileOff);
+            oft->u1.AddressOfData = decoyNameRVA;
+        }
+    }
+
+    // 3. Build the new section content.
     const char* compatDllName = "CompatRuntime.dll";
     size_t dllNameLen = strlen(compatDllName) + 1;
 
-    // Each redirected API needs: IMAGE_IMPORT_BY_NAME (2 + name_len + 1) + IMAGE_THUNK_DATA
-    size_t namesSize = 0;
-    std::vector<size_t> nameOffsets; // offsets within the name area
-    for (auto& ur : uniqueRedirects)
-    {
-        nameOffsets.push_back(namesSize);
-        namesSize += 2 + ur.second.size() + 1; // Hint(2) + name + null
-    }
-
-    // Layout of new section content (offsets relative to section start):
-    // [0 .. descCount]           : IMAGE_IMPORT_DESCRIPTOR array (original descriptors, modified)
-    // [descCount .. descCount+1] : New IMAGE_IMPORT_DESCRIPTOR for CompatRuntime
-    // [descCount+1 .. 0]        : End sentinel (zero descriptor)
-    // Then: IMAGE_THUNK_DATA arrays for CompatRuntime
-    // Then: IMAGE_IMPORT_BY_NAME entries
-    // Then: DLL name string
-
-    int totalDescs = descCount + 1 + 1; // original + CompatRuntime + end sentinel
-    size_t descArraySize = totalDescs * sizeof(IMAGE_IMPORT_DESCRIPTOR);
-
-    // Align up.
     uint32_t align = nt->OptionalHeader.SectionAlignment;
     if (align == 0) align = 4096;
+    uint32_t fileAlign = nt->OptionalHeader.FileAlignment;
+    if (fileAlign == 0) fileAlign = 512;
 
-    // Calculate total content size.
-    size_t contentSize = 0;
-    contentSize = pe::AlignUp((uint32_t)descArraySize, align); // descriptors
-    size_t thunkAreaOffset = contentSize;
-    size_t thunkAreaSize = (uniqueRedirects.size() + 1) * sizeof(IMAGE_THUNK_DATA); // +1 for null terminator
-    contentSize += pe::AlignUp((uint32_t)thunkAreaSize, align);
-    size_t nameAreaOffset = contentSize;
-    contentSize += pe::AlignUp((uint32_t)namesSize, align);
-    size_t dllNameOffset = contentSize;
-    contentSize += pe::AlignUp((uint32_t)dllNameLen, align);
-    size_t totalSectionSize = pe::AlignUp((uint32_t)contentSize, align);
-    size_t totalRawSize = pe::AlignUp((uint32_t)contentSize, nt->OptionalHeader.FileAlignment);
+    size_t n = targets.size();
 
-    // Find where to place the new section.
+    // Count original descriptors (origDesc already located before step 2).
+    int descCount = 0;
+    for (auto* d = origDesc; d->FirstThunk != 0; d++) descCount++;
+
+    // Layout (offsets relative to new section start):
+    //   offDescArray : original descs + n compat descs + sentinel
+    //   offIltArrays : n private ILT arrays, each [1 entry][null] (16 bytes)
+    //   offNameArea  : n IMAGE_IMPORT_BY_NAME entries
+    //   offDllName   : "CompatRuntime.dll" (shared by all compat descs)
+    size_t offDescArray = 0;
+    size_t descArraySize = (descCount + (size_t)n + 1) * sizeof(IMAGE_IMPORT_DESCRIPTOR);
+    size_t offIltArrays = pe::AlignUp((uint32_t)(offDescArray + descArraySize), 16);
+    // Each compat descriptor gets its own 2-thunk ILT (1 entry + null terminator).
+    size_t iltArraysSize = n * 2 * sizeof(IMAGE_THUNK_DATA);
+    size_t offNameArea = pe::AlignUp((uint32_t)(offIltArrays + iltArraysSize), 16);
+
+    size_t nameAreaSize = 0;
+    std::vector<size_t> nameOffsets(n);
+    for (size_t i = 0; i < n; i++)
+    {
+        nameOffsets[i] = nameAreaSize;
+        nameAreaSize += 2 + targets[i].apiName.size() + 1; // hint(2) + name + NUL
+    }
+    size_t offDllName = pe::AlignUp((uint32_t)(offNameArea + nameAreaSize), 16);
+    size_t totalContent = pe::AlignUp((uint32_t)(offDllName + dllNameLen), 16);
+    size_t totalRaw = pe::AlignUp((uint32_t)totalContent, fileAlign);
+
+    // Place new section after the last existing section.
     IMAGE_SECTION_HEADER* secTable = IMAGE_FIRST_SECTION(nt);
     IMAGE_SECTION_HEADER* lastSec = &secTable[nt->FileHeader.NumberOfSections - 1];
-
-    // Calculate new section's RVA and file offset.
     uint32_t newSecVA = pe::AlignUp(lastSec->VirtualAddress + lastSec->Misc.VirtualSize, align);
-    uint32_t newSecFileOffset = pe::AlignUp(lastSec->PointerToRawData + lastSec->SizeOfRawData,
-        nt->OptionalHeader.FileAlignment);
-    if (newSecFileOffset == 0) newSecFileOffset = pe::AlignUp((uint32_t)fileData.size(),
-        nt->OptionalHeader.FileAlignment);
+    uint32_t newSecFileOffset = pe::AlignUp(lastSec->PointerToRawData + lastSec->SizeOfRawData, fileAlign);
+    if (newSecFileOffset == 0) newSecFileOffset = pe::AlignUp((uint32_t)fileData.size(), fileAlign);
 
-    // Expand the file if needed.
-    size_t newFileSize = newSecFileOffset + totalRawSize;
+    size_t newFileSize = newSecFileOffset + totalRaw;
     if (fileData.size() < newFileSize) fileData.resize(newFileSize, 0);
-
-    // Zero out the new section area.
-    memset(fileData.data() + newSecFileOffset, 0, totalRawSize);
-
-    // 7. Write the new section content at newSecFileOffset.
     uint8_t* secBase = fileData.data() + newSecFileOffset;
+    memset(secBase, 0, totalRaw);
 
-    // 7a. Write modified original descriptors.
-    //     For each descriptor, we keep it but null out the thunks that are
-    //     being redirected. We do this by scanning and patching.
-    //     Actually, a simpler approach: write all original descriptors as-is,
-    //     then after writing the new section, patch the IAT thunks to point
-    //     to the new CompatRuntime thunks.
-    //
-    //     Even simpler: don't modify original descriptors. Instead, just add
-    //     a new descriptor for CompatRuntime with the same API names.
-    //     The loader will try the original first (fails) then the new one.
-    //     But actually, if kernel32 doesn't export the API, the import
-    //     descriptor for kernel32 will fail to load entirely.
-    //
-    //     So we MUST remove the redirected APIs from the original descriptor.
-    //     The cleanest way: write a NEW set of descriptors and thunks.
+    // CRITICAL: resize() above may have reallocated the underlying buffer,
+    // invalidating every PE pointer obtained before it (nt, importDir,
+    // secTable, origDesc). Re-derive them from the (possibly new) buffer.
+    nt = reinterpret_cast<IMAGE_NT_HEADERS*>(fileData.data() + dos->e_lfanew);
+    importDir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_IMPORT];
+    secTable = IMAGE_FIRST_SECTION(nt);
+    origDesc = pe::RvaPtr<IMAGE_IMPORT_DESCRIPTOR>(fileData.data(), nt, importDir->VirtualAddress);
 
-    // Write the new descriptor array: original descriptors (but with redirected
-    // APIs' thunks nulled) + CompatRuntime descriptor + end sentinel.
-
-    // For each original descriptor, we need to rebuild its thunk array
-    // without the redirected APIs. This requires:
-    //   - Scanning OriginalFirstThunk for each descriptor
-    //   - Copying non-redirected thunks
-    //   - Creating new thunk arrays in our section
-
-    // This is complex. Let's use a simpler approach:
-    // Write all original descriptors pointing to new thunk arrays in our section.
-    // For each descriptor, copy non-redirected thunks.
-
-    // Calculate how many non-redirected thunks per original descriptor.
-    std::vector<std::vector<IMAGE_THUNK_DATA>> newThunkArrays(descCount);
-    std::vector<uint32_t> newThunkRVA(descCount);
-
+    // Write original descriptors (unmodified) into the new descriptor array.
     for (int d = 0; d < descCount; d++)
     {
-        auto* desc = &origDesc[d];
-        uint32_t oftRVA = desc->OriginalFirstThunk ? desc->OriginalFirstThunk : desc->FirstThunk;
-        auto* oftEntry = pe::RvaPtr<IMAGE_THUNK_DATA>(fileData.data(), nt, oftRVA);
-        if (!oftEntry) continue;
-
-        for (; oftEntry->u1.AddressOfData != 0; oftEntry++)
-        {
-            bool shouldRedirect = false;
-            if (!IMAGE_SNAP_BY_ORDINAL(oftEntry->u1.Ordinal))
-            {
-                auto* hintName = pe::RvaPtr<IMAGE_IMPORT_BY_NAME>(fileData.data(), nt,
-                    (uint32_t)oftEntry->u1.AddressOfData);
-                if (hintName)
-                {
-                    std::string apiName = (const char*)hintName->Name;
-                    if (IsAPIRedirected(desc->Name ?
-                        pe::RvaPtr<char>(fileData.data(), nt, desc->Name) : "",
-                        apiName, redirectedAPIs))
-                    {
-                        shouldRedirect = true;
-                    }
-                }
-            }
-            if (!shouldRedirect)
-            {
-                newThunkArrays[d].push_back(*oftEntry);
-            }
-        }
+        memcpy(secBase + offDescArray + d * sizeof(IMAGE_IMPORT_DESCRIPTOR),
+               &origDesc[d], sizeof(IMAGE_IMPORT_DESCRIPTOR));
     }
 
-    // Now write everything to the new section.
-    size_t writeOffset = 0;
-
-    // Write descriptor array (will be updated with RVAs later).
-    size_t descArrayFileOffset = newSecFileOffset;
-    // Total: original descriptors (modified) + CompatRuntime + end sentinel
-    int totalNewDescs = descCount + 2;
-
-    // Calculate where thunks go.
-    size_t thunkStartOffset = pe::AlignUp((uint32_t)(totalNewDescs * sizeof(IMAGE_IMPORT_DESCRIPTOR)), (uint32_t)nt->OptionalHeader.SectionAlignment);
-
-    // Assign RVA for each thunk array.
-    uint32_t currentThunkRVA = newSecVA + (uint32_t)thunkStartOffset;
-    std::vector<uint32_t> origThunkNewRVA(descCount);
-    for (int d = 0; d < descCount; d++)
+    // Write one CompatRuntime descriptor per redirected API.
+    for (size_t i = 0; i < n; i++)
     {
-        origThunkNewRVA[d] = currentThunkRVA;
-        currentThunkRVA += (uint32_t)((newThunkArrays[d].size() + 1) * sizeof(IMAGE_THUNK_DATA));
-    }
-    uint32_t compatThunkRVA = currentThunkRVA;
-    currentThunkRVA += (uint32_t)((uniqueRedirects.size() + 1) * sizeof(IMAGE_THUNK_DATA));
-
-    // Name area starts after thunks.
-    size_t nameStartOffset = (size_t)(currentThunkRVA - newSecVA);
-
-    // Write descriptor array.
-    for (int d = 0; d < descCount; d++)
-    {
-        IMAGE_IMPORT_DESCRIPTOR newDesc = origDesc[d];
-        newDesc.OriginalFirstThunk = origThunkNewRVA[d];
-        newDesc.FirstThunk = origThunkNewRVA[d]; // IAT same as ILT for simplicity
-        memcpy(secBase + d * sizeof(IMAGE_IMPORT_DESCRIPTOR), &newDesc, sizeof(newDesc));
+        IMAGE_IMPORT_DESCRIPTOR compatDesc = {};
+        compatDesc.OriginalFirstThunk = (uint32_t)(newSecVA + offIltArrays + i * 2 * sizeof(IMAGE_THUNK_DATA));
+        compatDesc.FirstThunk = targets[i].iatRVA; // loader writes into original IAT slot
+        compatDesc.Name = (uint32_t)(newSecVA + offDllName);
+        memcpy(secBase + offDescArray + (descCount + i) * sizeof(IMAGE_IMPORT_DESCRIPTOR),
+               &compatDesc, sizeof(compatDesc));
     }
 
-    // CompatRuntime descriptor.
-    IMAGE_IMPORT_DESCRIPTOR compatDesc = {};
-    compatDesc.OriginalFirstThunk = compatThunkRVA;
-    compatDesc.FirstThunk = compatThunkRVA;
-    compatDesc.Name = newSecVA + (uint32_t)dllNameOffset;
-    memcpy(secBase + descCount * sizeof(IMAGE_IMPORT_DESCRIPTOR), &compatDesc, sizeof(compatDesc));
-
-    // End sentinel.
-    IMAGE_IMPORT_DESCRIPTOR endDesc = {};
-    memcpy(secBase + (descCount + 1) * sizeof(IMAGE_IMPORT_DESCRIPTOR), &endDesc, sizeof(endDesc));
-
-    // Write original thunks (modified, without redirected APIs).
-    for (int d = 0; d < descCount; d++)
+    // Write sentinel descriptor.
     {
-        size_t thunkFileOffset = newSecFileOffset + thunkStartOffset;
-        for (int t = 0; t < descCount; t++)
-        {
-            if (t == d)
-            {
-                // Write this descriptor's thunks.
-                size_t offset = thunkFileOffset;
-                for (auto& thunk : newThunkArrays[t])
-                {
-                    memcpy(secBase + (offset - newSecFileOffset), &thunk, sizeof(thunk));
-                    offset += sizeof(IMAGE_THUNK_DATA);
-                }
-                // Null terminator.
-                IMAGE_THUNK_DATA nullThunk = {};
-                memcpy(secBase + (offset - newSecFileOffset), &nullThunk, sizeof(nullThunk));
-                offset += sizeof(IMAGE_THUNK_DATA);
-                thunkFileOffset = offset;
-            }
-            else
-            {
-                thunkFileOffset += (newThunkArrays[t].size() + 1) * sizeof(IMAGE_THUNK_DATA);
-            }
-        }
+        IMAGE_IMPORT_DESCRIPTOR sentinel = {};
+        memcpy(secBase + offDescArray + (descCount + n) * sizeof(IMAGE_IMPORT_DESCRIPTOR),
+               &sentinel, sizeof(sentinel));
     }
 
-    // Write CompatRuntime thunks (the redirected APIs).
-    size_t compatThunkFileOffset = newSecFileOffset + (size_t)(compatThunkRVA - newSecVA);
-    size_t nameFileOffset = newSecFileOffset + nameStartOffset;
-
-    for (size_t i = 0; i < uniqueRedirects.size(); i++)
+    // Write private ILT arrays: each [1 entry -> IMAGE_IMPORT_BY_NAME][null].
+    for (size_t i = 0; i < n; i++)
     {
-        IMAGE_THUNK_DATA thunk = {};
-        thunk.u1.AddressOfData = newSecVA + (uint32_t)(nameStartOffset + nameOffsets[i]);
-        memcpy(secBase + (compatThunkFileOffset - newSecFileOffset) + i * sizeof(IMAGE_THUNK_DATA),
-            &thunk, sizeof(thunk));
-
-        // Write IMAGE_IMPORT_BY_NAME.
-        auto& ur = uniqueRedirects[i];
-        uint8_t* namePtr = secBase + nameStartOffset + nameOffsets[i];
-        uint16_t hint = 0; // Hint can be 0 for forwarded imports
-        memcpy(namePtr, &hint, 2);
-        memcpy(namePtr + 2, ur.second.c_str(), ur.second.size() + 1);
-    }
-
-    // Null terminator for CompatRuntime thunks.
-    {
+        uint8_t* iltBase = secBase + offIltArrays + i * 2 * sizeof(IMAGE_THUNK_DATA);
+        IMAGE_THUNK_DATA entry = {};
+        entry.u1.AddressOfData = (uint32_t)(newSecVA + offNameArea + nameOffsets[i]);
+        memcpy(iltBase, &entry, sizeof(entry));
         IMAGE_THUNK_DATA nullThunk = {};
-        memcpy(secBase + (compatThunkFileOffset - newSecFileOffset) +
-            uniqueRedirects.size() * sizeof(IMAGE_THUNK_DATA), &nullThunk, sizeof(nullThunk));
+        memcpy(iltBase + sizeof(IMAGE_THUNK_DATA), &nullThunk, sizeof(nullThunk));
+    }
+
+    // Write IMAGE_IMPORT_BY_NAME entries (hint + name).
+    for (size_t i = 0; i < n; i++)
+    {
+        uint8_t* namePtr = secBase + offNameArea + nameOffsets[i];
+        uint16_t hint = 0;
+        memcpy(namePtr, &hint, 2);
+        memcpy(namePtr + 2, targets[i].apiName.c_str(), targets[i].apiName.size() + 1);
     }
 
     // Write DLL name.
-    memcpy(secBase + dllNameOffset, compatDllName, dllNameLen);
+    memcpy(secBase + offDllName, compatDllName, dllNameLen);
 
-    // 8. Add the new section header.
+    // 4. Add the new section header.
     IMAGE_SECTION_HEADER newSec = {};
     memcpy(newSec.Name, ".compat", 8);
-    newSec.Misc.VirtualSize = (DWORD)contentSize;
+    newSec.Misc.VirtualSize = (DWORD)totalContent;
     newSec.VirtualAddress = newSecVA;
-    newSec.SizeOfRawData = (DWORD)totalRawSize;
+    newSec.SizeOfRawData = (DWORD)totalRaw;
     newSec.PointerToRawData = newSecFileOffset;
     newSec.Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
-
-    // Add section header after existing ones.
     memcpy(&secTable[nt->FileHeader.NumberOfSections], &newSec, sizeof(newSec));
     nt->FileHeader.NumberOfSections++;
 
-    // 9. Update the import directory to encompass the new section.
-    //    We extend the import directory to cover both old and new descriptors.
-    importDir->Size += (DWORD)(2 * sizeof(IMAGE_IMPORT_DESCRIPTOR)); // CompatRuntime + sentinel
+    // 5. Update the import directory to point to the new descriptor array.
+    importDir->VirtualAddress = (uint32_t)(newSecVA + offDescArray);
+    importDir->Size = (DWORD)((descCount + n + 1) * sizeof(IMAGE_IMPORT_DESCRIPTOR));
 
-    // 10. Update SizeOfImage.
-    nt->OptionalHeader.SizeOfImage = newSecVA + (DWORD)totalSectionSize;
+    // 6. Update SizeOfImage.
+    nt->OptionalHeader.SizeOfImage = pe::AlignUp(newSecVA + (DWORD)totalContent, align);
 
-    result.apisRedirected = (int)uniqueRedirects.size();
+    result.apisRedirected = (int)n;
     return result;
 }
 
 bool WritePatchedFile(const char* filePath, const std::vector<uint8_t>& data)
 {
-    // Create backup.
     std::string backupPath = std::string(filePath) + ".bak";
-    // Copy original to backup (if backup doesn't exist).
     FILE* f = nullptr;
     fopen_s(&f, backupPath.c_str(), "rb");
     if (!f)
     {
-        // No backup exists; copy original.
         auto orig = pe::ReadFile(filePath);
         if (!orig.empty()) pe::WriteFile(backupPath.c_str(), orig);
     }

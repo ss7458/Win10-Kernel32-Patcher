@@ -34,22 +34,6 @@ COMPAT_API UINT WINAPI GetDpiForSystem()
 }
 
 // ============================================================
-// GetDpiForMonitor - L1 (fallback)
-// Introduced: Win10 1607 (build 14393)
-// ============================================================
-COMPAT_API HRESULT WINAPI GetDpiForMonitor(HMONITOR hmonitor, MONITOR_DPI_TYPE dpiType, UINT* dpiX, UINT* dpiY)
-{
-    if (!dpiX || !dpiY) return E_INVALIDARG;
-    HDC hdc = GetDC(NULL);
-    *dpiX = (UINT)GetDeviceCaps(hdc, LOGPIXELSX);
-    *dpiY = (UINT)GetDeviceCaps(hdc, LOGPIXELSY);
-    ReleaseDC(NULL, hdc);
-    if (*dpiX == 0) *dpiX = 96;
-    if (*dpiY == 0) *dpiY = 96;
-    return S_OK;
-}
-
-// ============================================================
 // SetProcessDpiAwarenessContext - L3 (stub)
 // Introduced: Win10 1703 (build 15063)
 // ============================================================
@@ -68,14 +52,4 @@ COMPAT_API BOOL WINAPI EnableNonClientDpiScaling(HWND hwnd)
 {
     (void)hwnd;
     return TRUE;
-}
-
-// ============================================================
-// SetProcessDpiAwareness - L3 (stub, already on Win8.1)
-// Introduced: Win8.1
-// ============================================================
-COMPAT_API HRESULT WINAPI SetProcessDpiAwareness(PROCESS_DPI_AWARENESS value)
-{
-    (void)value;
-    return S_OK;
 }

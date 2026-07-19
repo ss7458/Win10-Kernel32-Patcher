@@ -1,7 +1,7 @@
 // test_runtime.cpp - Validates that CompatRuntime APIs behave correctly.
 // This is a simple self-verifying test; no external test framework required.
 
-#include "../Win10CompatRuntime/CompatRuntime/CompatRuntime.h"
+#include "../CompatRuntime/CompatRuntime.h"
 #include <cstdio>
 #include <cstdlib>
 
@@ -22,8 +22,8 @@ static int g_failed = 0;
 extern "C" {
 COMPAT_API HRESULT WINAPI SetThreadDescription(HANDLE hThread, PCWSTR lpThreadDescription);
 COMPAT_API HRESULT WINAPI GetThreadDescription(HANDLE hThread, PWSTR* ppszThreadDescription);
-COMPAT_API BOOL WINAPI SetThreadInformation(HANDLE hThread, DWORD ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize);
-COMPAT_API BOOL WINAPI GetThreadInformation(HANDLE hThread, DWORD ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize);
+COMPAT_API BOOL WINAPI SetThreadInformation(HANDLE hThread, THREAD_INFORMATION_CLASS ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize);
+COMPAT_API BOOL WINAPI GetThreadInformation(HANDLE hThread, THREAD_INFORMATION_CLASS ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize);
 }
 
 TEST(SetThreadDescription_returns_S_OK)
@@ -34,7 +34,7 @@ TEST(SetThreadDescription_returns_S_OK)
 
 TEST(GetThreadDescription_returns_null)
 {
-    PWSTR desc = (PWSTR)0xDEADBEEF;
+    PWSTR desc = (PWSTR)(uintptr_t)0xDEADBEEF;
     HRESULT hr = GetThreadDescription(GetCurrentThread(), &desc);
     ASSERT_EQ(hr, S_OK);
     ASSERT(desc == nullptr);
