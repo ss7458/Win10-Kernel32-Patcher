@@ -24,3 +24,8 @@ build_test*.bat
 # OS
 Thumbs.db
 .DS_Store
+
+# Local SSH askpass helper (contains password - do not commit)
+askpass.cmd
+# Build debug log
+build_log.txt

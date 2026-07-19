@@ -14,12 +14,13 @@ file(GLOB UTIL_SRC Utils/*.cpp)
 
 add_library(CompatRuntime SHARED
     CompatRuntime.cpp
+    RuntimePatch.cpp
     CompatRuntime.def
     ${THREAD_SRC} ${MEMORY_SRC} ${FILE_SRC} ${PROCESS_SRC}
     ${TIME_SRC} ${SYNC_SRC} ${DPI_SRC} ${DLL_SRC} ${UTIL_SRC}
 )
 
-target_compile_definitions(CompatRuntime PRIVATE COMPATRUNTIME_EXPORTS)
+target_compile_definitions(CompatRuntime PRIVATE COMPATRUNTIME_EXPORTS _CRT_SECURE_NO_WARNINGS)
 set_target_properties(CompatRuntime PROPERTIES
     OUTPUT_NAME "CompatRuntime"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"

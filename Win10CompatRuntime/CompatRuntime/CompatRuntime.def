@@ -72,3 +72,4 @@ WakeAllConditionVariable
 WakeByAddressAll
 WakeByAddressSingle
 WakeConditionVariable
+Compat_ApplyToCurrentProcess

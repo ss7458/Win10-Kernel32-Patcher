@@ -7,6 +7,7 @@
 
 #include "CompatRuntime.h"
 #include <stdio.h>
+#include <cstdlib>
 
 #ifdef COMPATRUNTIME_EXPORTS
 // Defined when building the DLL so COMPAT_API expands to dllexport.
@@ -22,6 +23,16 @@ BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpReserved)
         // Disable thread-attached notifications for performance; we don't need them.
         DisableThreadLibraryCalls(hinstDLL);
         g_Initialized = TRUE;
+
+        // Runtime redirection trigger. When injected by CompatLoader.exe, the
+        // COMPAT_LOADER environment flag is set and COMPAT_DB points at the
+        // database directory. Rewrite the host EXE's IAT so its kernel32 /
+        // api-ms imports resolve to our shims.
+        if (getenv("COMPAT_LOADER") != nullptr)
+        {
+            const char* db = getenv("COMPAT_DB");
+            Compat_RuntimePatchCurrentProcess(db ? db : ".");
+        }
         break;
 
     case DLL_PROCESS_DETACH:

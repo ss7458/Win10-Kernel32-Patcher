@@ -14,6 +14,7 @@ endif()
 # Subdirectories
 add_subdirectory(CompatRuntime)
 add_subdirectory(CompatPatch)
+add_subdirectory(CompatLoader)
 add_subdirectory(Tests)
 
 # Install database files alongside binaries

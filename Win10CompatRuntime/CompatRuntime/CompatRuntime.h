@@ -80,4 +80,11 @@ inline DWORD Compat_GetWindowsBuild()
     return build;
 }
 
+// Internal: apply runtime IAT redirection to the current process. Called from
+// DllMain when injected by CompatLoader.exe (COMPAT_LOADER env flag set).
+void Compat_RuntimePatchCurrentProcess(const char* dbDir);
+
+// Exported: apply runtime IAT redirection to the current process on demand.
+COMPAT_API void WINAPI Compat_ApplyToCurrentProcess(const char* dbDir);
+
 #endif // COMPAT_RUNTIME_H
