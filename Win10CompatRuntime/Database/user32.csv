@@ -1,0 +1,3 @@
+# user32.dll API compatibility database
+user32,GetDpiForWindow,14393,L1,Runtime,Compat_GetDpiForWindow
+user32,EnableNonClientDpiScaling,14393,L3,Runtime,Compat_EnableNonClientDpiScaling

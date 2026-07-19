@@ -1,0 +1,39 @@
+name: Build Win10CompatRuntime
+
+on:
+  push:
+    branches: [cxx-runtime]
+  pull_request:
+    branches: [cxx-runtime]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4
+
+    - name: Setup MSVC
+      uses: ilammy/msvc-dev-cmd@v1
+      with:
+        arch: x64
+
+    - name: Configure CMake
+      run: cmake -S Win10CompatRuntime -B build -G "Ninja" -DCMAKE_BUILD_TYPE=Release
+
+    - name: Build
+      run: cmake --build build --config Release
+
+    - name: Run Tests
+      run: ./build/bin/CompatTests.exe
+
+    - name: Upload Artifacts
+      uses: actions/upload-artifact@v4
+      with:
+        name: Win10CompatRuntime
+        path: |
+          build/bin/CompatRuntime.dll
+          build/bin/CompatPatch.exe
+          build/bin/CompatTests.exe
+          Win10CompatRuntime/Database/*

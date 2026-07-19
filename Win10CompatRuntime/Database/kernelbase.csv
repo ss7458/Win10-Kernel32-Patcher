@@ -1,0 +1,11 @@
+# kernelbase.dll API compatibility database
+# These APIs exist in kernelbase on Win10 but may not be in older kernel32.
+kernelbase,SetThreadDescription,14393,L0,Runtime,Compat_SetThreadDescription
+kernelbase,GetThreadDescription,14393,L0,Runtime,Compat_GetThreadDescription
+kernelbase,VirtualAlloc2,14393,L2,Runtime,Compat_VirtualAlloc2
+kernelbase,CreateFile2,14393,L1,Runtime,Compat_CreateFile2
+kernelbase,QueryFullProcessImageNameW,14393,L1,Runtime,Compat_QueryFullProcessImageNameW
+kernelbase,GetDpiForWindow,14393,L1,Runtime,Compat_GetDpiForWindow
+kernelbase,SetProcessDpiAwarenessContext,15063,L3,Runtime,Compat_SetProcessDpiAwarenessContext
+kernelbase,AddDllDirectory,14393,L0,Runtime,Compat_AddDllDirectory
+kernelbase,RemoveDllDirectory,14393,L0,Runtime,Compat_RemoveDllDirectory

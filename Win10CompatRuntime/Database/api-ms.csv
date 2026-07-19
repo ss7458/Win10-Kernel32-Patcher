@@ -1,0 +1,19 @@
+# api-ms-* API set compatibility database
+# These are the API set virtual DLLs that modern apps may import.
+api-ms-win-core-synch-l1-2-0,InitializeConditionVariable,14393,L0,Runtime,Compat_InitializeConditionVariable
+api-ms-win-core-synch-l1-2-0,WakeConditionVariable,14393,L0,Runtime,Compat_WakeConditionVariable
+api-ms-win-core-synch-l1-2-0,WakeAllConditionVariable,14393,L0,Runtime,Compat_WakeAllConditionVariable
+api-ms-win-core-synch-l1-2-0,SleepConditionVariableCS,14393,L0,Runtime,Compat_SleepConditionVariableCS
+api-ms-win-core-synch-l1-2-0,SleepConditionVariableSRW,14393,L0,Runtime,Compat_SleepConditionVariableSRW
+api-ms-win-core-processthreads-l1-1-2,SetThreadDescription,14393,L0,Runtime,Compat_SetThreadDescription
+api-ms-win-core-processthreads-l1-1-2,GetThreadDescription,14393,L0,Runtime,Compat_GetThreadDescription
+api-ms-win-core-memory-l1-1-4,VirtualAlloc2,14393,L2,Runtime,Compat_VirtualAlloc2
+api-ms-win-core-memory-l1-1-4,VirtualProtectFromApp,14393,L1,Runtime,Compat_VirtualProtectFromApp
+api-ms-win-core-file-l2-1-2,GetFileInformationByHandleEx,14393,L1,Runtime,Compat_GetFileInformationByHandleEx
+api-ms-win-core-file-l2-1-2,GetFinalPathNameByHandleW,14393,L1,Runtime,Compat_GetFinalPathNameByHandleW
+api-ms-win-core-file-l2-1-2,CreateFile2,14393,L1,Runtime,Compat_CreateFile2
+api-ms-win-core-version-l2-1-1,GetPackageFamilyName,14393,L3,Runtime,Compat_GetPackageFamilyName
+api-ms-win-core-version-l2-1-1,GetCurrentPackageId,14393,L3,Runtime,Compat_GetCurrentPackageId
+api-ms-win-dwm-runtime-l1-1-0,EnableNonClientDpiScaling,14393,L3,Runtime,Compat_EnableNonClientDpiScaling
+api-ms-win-core-timezone-l1-1-0,GetSystemTimePreciseAsFileTime,14393,L1,Runtime,Compat_GetSystemTimePreciseAsFileTime
+api-ms-win-core-quirks-l1-1-0,QueryInterruptTimePrecise,17134,L1,Runtime,Compat_QueryInterruptTimePrecise
