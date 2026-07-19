@@ -8,6 +8,7 @@
 #include "PEUtils.h"
 #include "ImportScanner.h"
 #include "ImportRebuilder.h"
+#include <windows.h>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -103,6 +104,27 @@ static void PrintUsage()
     printf("  --help            Show this help\n");
 }
 
+// Resolve the database directory. If --database was passed, use it. Otherwise
+// look for a "Database" folder next to this exe; fall back to ".\\Database"
+// so the tool works with zero configuration.
+static std::string ResolveDbDir(const char* userSpecified)
+{
+    if (userSpecified && userSpecified[0])
+        return std::string(userSpecified);
+
+    char exePath[MAX_PATH] = { 0 };
+    if (GetModuleFileNameA(nullptr, exePath, MAX_PATH))
+    {
+        char* slash = strrchr(exePath, '\\');
+        if (slash) *slash = '\0';
+        std::string candidate = std::string(exePath) + "\\Database";
+        DWORD attr = GetFileAttributesA(candidate.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
+            return candidate;
+    }
+    return ".\\Database";
+}
+
 int main(int argc, char* argv[])
 {
     PrintBanner();
@@ -114,7 +136,7 @@ int main(int argc, char* argv[])
     }
 
     const char* targetPath = nullptr;
-    const char* dbDir = ".\\Database";
+    std::string dbDir = ResolveDbDir(nullptr);
     bool dryRun = false;
     bool listOnly = false;
 
@@ -135,8 +157,8 @@ int main(int argc, char* argv[])
     }
 
     // Load database.
-    printf("[INFO] Loading API database from: %s\n", dbDir);
-    auto db = LoadAllDatabases(dbDir);
+    printf("[INFO] Loading API database from: %s\n", dbDir.c_str());
+    auto db = LoadAllDatabases(dbDir.c_str());
     printf("[INFO] Loaded %zu API entries.\n\n", db.size());
 
     // Read target file.

@@ -23,10 +23,31 @@ static std::string AbsolutePath(const char* p)
     return std::string(buf);
 }
 
+// Resolve the database directory. If the user passed --database, use it.
+// Otherwise look for a "Database" folder next to this exe; fall back to the
+// current working directory's "Database" so the tool works with zero config.
+static std::string ResolveDbDir(const char* userSpecified)
+{
+    if (userSpecified && userSpecified[0])
+        return std::string(userSpecified);
+
+    char exePath[MAX_PATH] = { 0 };
+    if (GetModuleFileNameA(nullptr, exePath, MAX_PATH))
+    {
+        char* slash = strrchr(exePath, '\\');
+        if (slash) *slash = '\0';
+        std::string candidate = std::string(exePath) + "\\Database";
+        DWORD attr = GetFileAttributesA(candidate.c_str());
+        if (attr != INVALID_FILE_ATTRIBUTES && (attr & FILE_ATTRIBUTE_DIRECTORY))
+            return candidate;
+    }
+    return "Database";
+}
+
 int main(int argc, char* argv[])
 {
     const char* target = nullptr;
-    std::string dbDir = "Database";
+    std::string dbDir = ResolveDbDir(nullptr);
     std::string compat = "CompatRuntime.dll";
 
     for (int i = 1; i < argc; ++i)
