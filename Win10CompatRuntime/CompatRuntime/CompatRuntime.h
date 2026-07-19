@@ -27,15 +27,14 @@
 #include <winternl.h>
 #endif
 
-// Export macro: every compat API uses this so the linker emits the export.
-#ifdef COMPATRUNTIME_EXPORTS
-#define COMPAT_API extern "C" __declspec(dllexport)
-#else
+// Export macro: every compat API uses this so the linker emits the export
+// by its original Windows name. Exports are driven by CompatRuntime.def
+// (module-definition file) instead of __declspec(dllexport); this avoids
+// C2375/C2491 linkage conflicts when redefining SDK-declared APIs.
 #define COMPAT_API extern "C"
-#endif
 
-// Benign: we intentionally redefine some Windows APIs with dllexport
-// while the SDK headers declare them with dllimport.
+// Benign: we intentionally redefine some Windows APIs (the SDK headers
+// declare them with dllimport); the redeclaration differs only in linkage.
 #pragma warning(disable: 4273)
 
 // Compatibility level documentation (informational, not enforced at runtime).

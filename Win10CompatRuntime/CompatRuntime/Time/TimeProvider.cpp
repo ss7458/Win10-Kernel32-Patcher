@@ -1,61 +1,138 @@
 // TimeProvider.cpp - Time API compatibility implementations.
-// GetSystemTimePreciseAsFileTime -> L1 (fallback to GetSystemTimeAsFileTime)
-// QueryInterruptTimePrecise -> L1 (fallback to GetTickCount64 * 10000)
-// GetTickCount64 -> L1 (fallback to GetTickCount with extension)
+// Strategy: L1 forward to real OS implementation when present, else fallback
+// to older equivalent API.
 
 #include "../CompatRuntime.h"
 
 // ============================================================
-// GetSystemTimePreciseAsFileTime - L1 (degrade to GetSystemTimeAsFileTime)
-// Introduced: Win10 1607 (build 14393)
+// GetSystemTimePreciseAsFileTime - L1
+// Introduced: Win8 (build 9200)
 // ============================================================
 COMPAT_API VOID WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME lpSystemTimeAsFileTime)
 {
-    // The only difference is precision: the "Precise" version uses QPC
-    // to sub-microsecond accuracy. GetSystemTimeAsFileTime is accurate
-    // to ~15.6ms (the system timer tick). For most callers this is fine.
+    typedef VOID(WINAPI* PFN)(LPFILETIME);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "GetSystemTimePreciseAsFileTime");
+    if (pfn) { pfn(lpSystemTimeAsFileTime); return; }
     GetSystemTimeAsFileTime(lpSystemTimeAsFileTime);
 }
 
 // ============================================================
-// QueryInterruptTimePrecise - L1 (approximate via GetTickCount64)
-// Introduced: Win10 1803 (build 17134)
+// GetSystemTimePrecise - L1
+// Introduced: Win8 (build 9200)
 // ============================================================
-COMPAT_API VOID WINAPI QueryInterruptTimePrecise(PULONGLONG lpInterruptTimePrecise)
+COMPAT_API VOID WINAPI GetSystemTimePrecise(LPSYSTEMTIME lpSystemTime)
 {
-    if (!lpInterruptTimePrecise) return;
-    // QueryInterruptTimePrecise returns time in 100ns units since boot
-    // (excluding sleep). GetTickCount64 returns milliseconds since boot.
-    *lpInterruptTimePrecise = GetTickCount64() * 10000ULL;
+    typedef VOID(WINAPI* PFN)(LPSYSTEMTIME);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "GetSystemTimePrecise");
+    if (pfn) { pfn(lpSystemTime); return; }
+    GetSystemTime(lpSystemTime);
 }
 
 // ============================================================
-// QueryUnbiasedInterruptTimePrecise - L1 (approximate)
-// Introduced: Win10 1803 (build 17134)
+// QueryInterruptTime - L1
+// Introduced: Win10 1507 (build 10240)
+// Derives from QueryPerformanceCounter when real API absent.
 // ============================================================
-COMPAT_API VOID WINAPI QueryUnbiasedInterruptTimePrecise(PULONGLONG lpUnbiasedInterruptTimePrecise)
+COMPAT_API VOID WINAPI QueryInterruptTime(PULONG64 lpInterruptTime)
 {
-    if (!lpUnbiasedInterruptTimePrecise) return;
-    // QueryUnbiasedInterruptTimePrecise excludes time spent in connected
-    // standby (modern sleep). GetTickCount64 already excludes this on
-    // most systems. Approximate with GetTickCount64.
-    *lpUnbiasedInterruptTimePrecise = GetTickCount64() * 10000ULL;
-}
-
-// ============================================================
-// GetTickCount64 - L1 (fallback to GetTickCount with high-dword extension)
-// Introduced: Win10 1607 (but actually available since Vista via API-MS)
-// ============================================================
-COMPAT_API ULONGLONG WINAPI GetTickCount64()
-{
-    // On modern Windows this is already exported. If not, use GetTickCount.
-    typedef ULONGLONG (WINAPI *GetTickCount64_t)(void);
-    static GetTickCount64_t pFunc = NULL;
-    if (!pFunc)
+    typedef VOID(WINAPI* PFN)(PULONG64);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "QueryInterruptTime");
+    if (pfn) { pfn(lpInterruptTime); return; }
+    if (!lpInterruptTime) return;
+    LARGE_INTEGER count, freq;
+    if (QueryPerformanceCounter(&count) && QueryPerformanceFrequency(&freq) && freq.QuadPart != 0)
     {
-        pFunc = (GetTickCount64_t)GetProcAddress(GetModuleHandleA("kernel32.dll"), "GetTickCount64");
+        *lpInterruptTime = (ULONG64)((double)count.QuadPart / (double)freq.QuadPart * 10000000.0);
     }
-    if (pFunc) return pFunc();
-    // Fallback: GetTickCount wraps at ~49.7 days.
+    else
+    {
+        *lpInterruptTime = 0;
+    }
+}
+
+// ============================================================
+// QueryUnbiasedInterruptTime - L1
+// Introduced: Win10 1507 (build 10240)
+// Same derivation as QueryInterruptTime (ignores bias).
+// ============================================================
+COMPAT_API BOOL WINAPI QueryUnbiasedInterruptTime(PULONG64 lpUnbiasedInterruptTime)
+{
+    typedef BOOL(WINAPI* PFN)(PULONG64);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "QueryUnbiasedInterruptTime");
+    if (pfn) return pfn(lpUnbiasedInterruptTime);
+    if (!lpUnbiasedInterruptTime) return FALSE;
+    LARGE_INTEGER count, freq;
+    if (QueryPerformanceCounter(&count) && QueryPerformanceFrequency(&freq) && freq.QuadPart != 0)
+    {
+        *lpUnbiasedInterruptTime = (ULONG64)((double)count.QuadPart / (double)freq.QuadPart * 10000000.0);
+        return TRUE;
+    }
+    else
+    {
+        *lpUnbiasedInterruptTime = 0;
+        return FALSE;
+    }
+}
+
+// ============================================================
+// QueryInterruptTimePrecise - L1
+// Introduced: Win10 1507 (build 10240)
+// Same derivation as QueryInterruptTime.
+// ============================================================
+COMPAT_API VOID WINAPI QueryInterruptTimePrecise(PULONG64 lpInterruptTimePrecise)
+{
+    typedef VOID(WINAPI* PFN)(PULONG64);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "QueryInterruptTimePrecise");
+    if (pfn) { pfn(lpInterruptTimePrecise); return; }
+    if (!lpInterruptTimePrecise) return;
+    LARGE_INTEGER count, freq;
+    if (QueryPerformanceCounter(&count) && QueryPerformanceFrequency(&freq) && freq.QuadPart != 0)
+    {
+        *lpInterruptTimePrecise = (ULONG64)((double)count.QuadPart / (double)freq.QuadPart * 10000000.0);
+    }
+    else
+    {
+        *lpInterruptTimePrecise = 0;
+    }
+}
+
+// ============================================================
+// QueryUnbiasedInterruptTimePrecise - L1
+// Introduced: Win10 1507 (build 10240)
+// Same derivation as QueryInterruptTime.
+// ============================================================
+COMPAT_API VOID WINAPI QueryUnbiasedInterruptTimePrecise(PULONG64 lpUnbiasedInterruptTimePrecise)
+{
+    typedef VOID(WINAPI* PFN)(PULONG64);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "QueryUnbiasedInterruptTimePrecise");
+    if (pfn) { pfn(lpUnbiasedInterruptTimePrecise); return; }
+    if (!lpUnbiasedInterruptTimePrecise) return;
+    LARGE_INTEGER count, freq;
+    if (QueryPerformanceCounter(&count) && QueryPerformanceFrequency(&freq) && freq.QuadPart != 0)
+    {
+        *lpUnbiasedInterruptTimePrecise = (ULONG64)((double)count.QuadPart / (double)freq.QuadPart * 10000000.0);
+    }
+    else
+    {
+        *lpUnbiasedInterruptTimePrecise = 0;
+    }
+}
+
+// ============================================================
+// GetTickCount64 - L1
+// Introduced: Vista (build 6000)
+// ============================================================
+COMPAT_API ULONGLONG WINAPI GetTickCount64(VOID)
+{
+    typedef ULONGLONG(WINAPI* PFN)(VOID);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "GetTickCount64");
+    if (pfn) { return pfn(); }
     return (ULONGLONG)GetTickCount();
 }

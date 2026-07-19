@@ -81,3 +81,94 @@ COMPAT_API BOOL WINAPI VirtualProtectFromApp(PVOID lpAddress, SIZE_T dwSize, DWO
 {
     return VirtualProtect(lpAddress, dwSize, flNewProtect, lpflOldProtect);
 }
+
+// ============================================================
+// VirtualAllocFromApp - L1 (forward, fallback to VirtualAllocEx)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API PVOID WINAPI VirtualAllocFromApp(PVOID BaseAddress, SIZE_T RegionSize, DWORD AllocationType, DWORD Protect)
+{
+    typedef PVOID(WINAPI *Fn)(PVOID, SIZE_T, DWORD, DWORD);
+    static Fn pReal = nullptr;
+    if (!pReal) pReal = (Fn)Compat_GetRealProc("kernel32", "VirtualAllocFromApp");
+    if (pReal) return pReal(BaseAddress, RegionSize, AllocationType, Protect);
+    return VirtualAllocEx(GetCurrentProcess(), BaseAddress, RegionSize, AllocationType, Protect);
+}
+
+// ============================================================
+// MapViewOfFileFromApp - L1 (forward, fallback to MapViewOfFileEx)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API PVOID WINAPI MapViewOfFileFromApp(HANDLE FileMapping, ULONG DesiredAccess, ULONG64 FileOffset, SIZE_T NumberOfBytesToMap)
+{
+    typedef PVOID(WINAPI *Fn)(HANDLE, ULONG, ULONG64, SIZE_T);
+    static Fn pReal = nullptr;
+    if (!pReal) pReal = (Fn)Compat_GetRealProc("kernel32", "MapViewOfFileFromApp");
+    if (pReal) return pReal(FileMapping, DesiredAccess, FileOffset, NumberOfBytesToMap);
+    return MapViewOfFileEx(FileMapping, DesiredAccess,
+        (DWORD)(FileOffset & 0xFFFFFFFF), (DWORD)(FileOffset >> 32),
+        NumberOfBytesToMap, NULL);
+}
+
+// ============================================================
+// DiscardVirtualMemory - L3 (forward, benign stub)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API DWORD WINAPI DiscardVirtualMemory(PVOID VirtualAddress, SIZE_T Size)
+{
+    typedef DWORD(WINAPI *Fn)(PVOID, SIZE_T);
+    static Fn pReal = nullptr;
+    if (!pReal) pReal = (Fn)Compat_GetRealProc("kernel32", "DiscardVirtualMemory");
+    if (pReal) return pReal(VirtualAddress, Size);
+    (void)VirtualAddress;
+    (void)Size;
+    return ERROR_SUCCESS;
+}
+
+// ============================================================
+// OfferVirtualMemory - L3 (forward, benign stub)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API DWORD WINAPI OfferVirtualMemory(PVOID VirtualAddress, SIZE_T Size, OFFER_PRIORITY Priority)
+{
+    typedef DWORD(WINAPI *Fn)(PVOID, SIZE_T, OFFER_PRIORITY);
+    static Fn pReal = nullptr;
+    if (!pReal) pReal = (Fn)Compat_GetRealProc("kernel32", "OfferVirtualMemory");
+    if (pReal) return pReal(VirtualAddress, Size, Priority);
+    (void)VirtualAddress;
+    (void)Size;
+    (void)Priority;
+    return ERROR_SUCCESS;
+}
+
+// ============================================================
+// ReclaimVirtualMemory - L3 (forward, benign stub)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API DWORD WINAPI ReclaimVirtualMemory(const void* VirtualAddress, SIZE_T Size)
+{
+    typedef DWORD(WINAPI *Fn)(const void*, SIZE_T);
+    static Fn pReal = nullptr;
+    if (!pReal) pReal = (Fn)Compat_GetRealProc("kernel32", "ReclaimVirtualMemory");
+    if (pReal) return pReal(VirtualAddress, Size);
+    (void)VirtualAddress;
+    (void)Size;
+    return ERROR_SUCCESS;
+}
+
+// ============================================================
+// PrefetchVirtualMemory - L3 (forward, benign stub)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API BOOL WINAPI PrefetchVirtualMemory(HANDLE hProcess, ULONG_PTR NumberOfEntries, PWIN32_MEMORY_RANGE_ENTRY VirtualAddresses, ULONG Flags)
+{
+    typedef BOOL(WINAPI *Fn)(HANDLE, ULONG_PTR, PWIN32_MEMORY_RANGE_ENTRY, ULONG);
+    static Fn pReal = nullptr;
+    if (!pReal) pReal = (Fn)Compat_GetRealProc("kernel32", "PrefetchVirtualMemory");
+    if (pReal) return pReal(hProcess, NumberOfEntries, VirtualAddresses, Flags);
+    (void)hProcess;
+    (void)NumberOfEntries;
+    (void)VirtualAddresses;
+    (void)Flags;
+    return TRUE;
+}

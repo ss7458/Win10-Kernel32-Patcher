@@ -77,3 +77,111 @@ COMPAT_API LONG WINAPI GetCurrentApplicationUserModelId(UINT32* applicationUserM
     (void)applicationUserModelId;
     return ERROR_NOT_FOUND; // Not a packaged app
 }
+
+// ============================================================
+// GetProcessInformation - L2 (forward to real API)
+// Introduced: Win8
+// ============================================================
+COMPAT_API BOOL WINAPI GetProcessInformation(HANDLE hProcess, PROCESS_INFORMATION_CLASS ProcessInformationClass, LPVOID ProcessInformation, DWORD ProcessInformationSize)
+{
+    (void)ProcessInformationClass;
+    (void)ProcessInformation;
+    (void)ProcessInformationSize;
+    auto pReal = Compat_GetRealProc("kernel32", "GetProcessInformation");
+    if (pReal)
+        return ((BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD))pReal)(hProcess, ProcessInformationClass, ProcessInformation, ProcessInformationSize);
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
+
+// ============================================================
+// SetProcessInformation - L2 (forward to real API)
+// Introduced: Win8
+// ============================================================
+COMPAT_API BOOL WINAPI SetProcessInformation(HANDLE hProcess, PROCESS_INFORMATION_CLASS ProcessInformationClass, LPVOID ProcessInformation, DWORD ProcessInformationSize)
+{
+    (void)ProcessInformationClass;
+    (void)ProcessInformation;
+    (void)ProcessInformationSize;
+    auto pReal = Compat_GetRealProc("kernel32", "SetProcessInformation");
+    if (pReal)
+        return ((BOOL(WINAPI*)(HANDLE, PROCESS_INFORMATION_CLASS, LPVOID, DWORD))pReal)(hProcess, ProcessInformationClass, ProcessInformation, ProcessInformationSize);
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
+
+// ============================================================
+// GetProcessMitigationPolicy - L4 (forward or memset + error)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API BOOL WINAPI GetProcessMitigationPolicy(HANDLE hProcess, PROCESS_MITIGATION_POLICY MitigationPolicy, PVOID lpBuffer, SIZE_T dwLength)
+{
+    (void)hProcess;
+    (void)MitigationPolicy;
+    auto pReal = Compat_GetRealProc("kernel32", "GetProcessMitigationPolicy");
+    if (pReal)
+        return ((BOOL(WINAPI*)(HANDLE, PROCESS_MITIGATION_POLICY, PVOID, SIZE_T))pReal)(hProcess, MitigationPolicy, lpBuffer, dwLength);
+    if (lpBuffer)
+        memset(lpBuffer, 0, dwLength);
+    SetLastError(ERROR_NOT_SUPPORTED);
+    return FALSE;
+}
+
+// ============================================================
+// SetProcessMitigationPolicy - L3 (forward or benign ignore)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API BOOL WINAPI SetProcessMitigationPolicy(PROCESS_MITIGATION_POLICY MitigationPolicy, PVOID lpBuffer, SIZE_T dwLength)
+{
+    (void)MitigationPolicy;
+    (void)lpBuffer;
+    (void)dwLength;
+    auto pReal = Compat_GetRealProc("kernel32", "SetProcessMitigationPolicy");
+    if (pReal)
+        return ((BOOL(WINAPI*)(PROCESS_MITIGATION_POLICY, PVOID, SIZE_T))pReal)(MitigationPolicy, lpBuffer, dwLength);
+    return TRUE;
+}
+
+// ============================================================
+// IsProcessCritical - L1 (forward or return FALSE)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API BOOL WINAPI IsProcessCritical(HANDLE hProcess, PBOOL Critical)
+{
+    (void)hProcess;
+    auto pReal = Compat_GetRealProc("kernel32", "IsProcessCritical");
+    if (pReal)
+        return ((BOOL(WINAPI*)(HANDLE, PBOOL))pReal)(hProcess, Critical);
+    if (Critical)
+        *Critical = FALSE;
+    return TRUE;
+}
+
+// ============================================================
+// QueryProcessAffinityUpdateMode - L1 (forward or return 0)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API BOOL WINAPI QueryProcessAffinityUpdateMode(HANDLE hProcess, PDWORD lpdwFlags)
+{
+    (void)hProcess;
+    auto pReal = Compat_GetRealProc("kernel32", "QueryProcessAffinityUpdateMode");
+    if (pReal)
+        return ((BOOL(WINAPI*)(HANDLE, PDWORD))pReal)(hProcess, lpdwFlags);
+    if (lpdwFlags)
+        *lpdwFlags = 0;
+    return TRUE;
+}
+
+// ============================================================
+// SetProcessAffinityUpdateMode - L1 (forward or benign ignore)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API BOOL WINAPI SetProcessAffinityUpdateMode(HANDLE hProcess, DWORD dwFlags)
+{
+    (void)hProcess;
+    (void)dwFlags;
+    auto pReal = Compat_GetRealProc("kernel32", "SetProcessAffinityUpdateMode");
+    if (pReal)
+        return ((BOOL(WINAPI*)(HANDLE, DWORD))pReal)(hProcess, dwFlags);
+    return TRUE;
+}

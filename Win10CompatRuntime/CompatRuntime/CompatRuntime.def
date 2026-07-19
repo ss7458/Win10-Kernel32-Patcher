@@ -1,0 +1,74 @@
+; CompatRuntime.def - Module-definition file for CompatRuntime.dll
+; All compatibility APIs are exported under their original Windows names so
+; that CompatPatch can redirect imports transparently. Exports are driven
+; by this file (not __declspec(dllexport)) to avoid C2375/C2491 linkage
+; conflicts when redefining SDK-declared APIs.
+
+LIBRARY CompatRuntime
+
+EXPORTS
+AddDllDirectory
+AreDpiAwarenessContextsEqual
+CreateFile2
+DiscardVirtualMemory
+EnableChildWindowDpiMessages
+EnableNonClientDpiScaling
+EventRegister
+EventUnregister
+EventWrite
+FindFirstStreamW
+FindNextStreamW
+GetAwarenessFromDpiAwarenessContext
+GetCurrentApplicationUserModelId
+GetCurrentPackageId
+GetDpiForMonitor
+GetDpiForSystem
+GetDpiForWindow
+GetFileInformationByHandleEx
+GetFinalPathNameByHandleW
+GetPackageFamilyName
+GetProcessDpiAwareness
+GetProcessDpiAwarenessContext
+GetProcessInformation
+GetProcessMitigationPolicy
+GetSystemTimePrecise
+GetSystemTimePreciseAsFileTime
+GetThreadDescription
+GetThreadDpiAwarenessContext
+GetThreadInformation
+GetTickCount64
+InitializeConditionVariable
+InitOnceExecuteOnce
+IsProcessCritical
+MapViewOfFile3
+MapViewOfFileFromApp
+OfferVirtualMemory
+PrefetchVirtualMemory
+QueryFullProcessImageNameW
+QueryInterruptTime
+QueryInterruptTimePrecise
+QueryProcessAffinityUpdateMode
+QueryUnbiasedInterruptTime
+QueryUnbiasedInterruptTimePrecise
+ReclaimVirtualMemory
+RemoveDllDirectory
+SetDefaultDllDirectories
+SetFileInformationByHandle
+SetProcessAffinityUpdateMode
+SetProcessDpiAwareness
+SetProcessDpiAwarenessContext
+SetProcessInformation
+SetProcessMitigationPolicy
+SetThreadDescription
+SetThreadDpiAwarenessContext
+SetThreadInformation
+SleepConditionVariableCS
+SleepConditionVariableSRW
+VirtualAlloc2
+VirtualAllocFromApp
+VirtualProtectFromApp
+WaitOnAddress
+WakeAllConditionVariable
+WakeByAddressAll
+WakeByAddressSingle
+WakeConditionVariable

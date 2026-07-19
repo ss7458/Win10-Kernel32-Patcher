@@ -9,10 +9,12 @@ file(GLOB TIME_SRC Time/*.cpp)
 file(GLOB SYNC_SRC Sync/*.cpp)
 file(GLOB DPI_SRC DPI/*.cpp)
 file(GLOB DLL_SRC DLL/*.cpp)
+file(GLOB ADVAPI_SRC AdvApi/*.cpp)
 file(GLOB UTIL_SRC Utils/*.cpp)
 
 add_library(CompatRuntime SHARED
     CompatRuntime.cpp
+    CompatRuntime.def
     ${THREAD_SRC} ${MEMORY_SRC} ${FILE_SRC} ${PROCESS_SRC}
     ${TIME_SRC} ${SYNC_SRC} ${DPI_SRC} ${DLL_SRC} ${UTIL_SRC}
 )

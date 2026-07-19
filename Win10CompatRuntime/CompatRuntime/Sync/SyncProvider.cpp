@@ -86,3 +86,78 @@ COMPAT_API BOOL WINAPI SleepConditionVariableSRW(PCONDITION_VARIABLE ConditionVa
     SetLastError(result == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError());
     return FALSE;
 }
+
+// File-scope state for WaitOnAddress family shims.
+static SRWLOCK g_waSRW = SRWLOCK_INIT;
+static CONDITION_VARIABLE g_waCV = CONDITION_VARIABLE_INIT;
+
+// ============================================================
+// WaitOnAddress - L2 (approximation using SRW + CV)
+// Introduced: Win8 / Win10
+// ============================================================
+COMPAT_API BOOL WINAPI WaitOnAddress(VOID volatile *Address, PVOID CompareAddress, SIZE_T AddressSize, DWORD dwMilliseconds)
+{
+    typedef BOOL(WINAPI* WaitOnAddressFn)(VOID volatile*, PVOID, SIZE_T, DWORD);
+    auto realFn = (WaitOnAddressFn)Compat_GetRealProc("kernel32", "WaitOnAddress");
+    if (realFn) return realFn(Address, CompareAddress, AddressSize, dwMilliseconds);
+
+    AcquireSRWLockExclusive(&g_waSRW);
+    while (true) {
+        if (memcmp((void*)Address, CompareAddress, AddressSize) == 0) {
+            BOOL result = SleepConditionVariableSRW(&g_waCV, &g_waSRW, dwMilliseconds, 0);
+            if (!result) {
+                ReleaseSRWLockExclusive(&g_waSRW);
+                return FALSE;
+            }
+        } else {
+            ReleaseSRWLockExclusive(&g_waSRW);
+            return TRUE;
+        }
+    }
+}
+
+// ============================================================
+// WakeByAddressAll - L0
+// ============================================================
+COMPAT_API VOID WINAPI WakeByAddressAll(PVOID Address)
+{
+    (void)Address;
+    AcquireSRWLockExclusive(&g_waSRW);
+    WakeAllConditionVariable(&g_waCV);
+    ReleaseSRWLockExclusive(&g_waSRW);
+}
+
+// ============================================================
+// WakeByAddressSingle - L0
+// ============================================================
+COMPAT_API VOID WINAPI WakeByAddressSingle(PVOID Address)
+{
+    (void)Address;
+    AcquireSRWLockExclusive(&g_waSRW);
+    WakeConditionVariable(&g_waCV);
+    ReleaseSRWLockExclusive(&g_waSRW);
+}
+
+// ============================================================
+// InitOnceExecuteOnce - L1
+// Introduced: Windows Vista
+// ============================================================
+COMPAT_API BOOL WINAPI InitOnceExecuteOnce(PINIT_ONCE InitOnce, PINIT_ONCE_FN InitFn, PVOID Parameter, LPVOID *Context)
+{
+    typedef BOOL(WINAPI* InitOnceExecuteOnceFn)(PINIT_ONCE, PINIT_ONCE_FN, PVOID, LPVOID*);
+    auto realFn = (InitOnceExecuteOnceFn)Compat_GetRealProc("kernel32", "InitOnceExecuteOnce");
+    if (realFn) return realFn(InitOnce, InitFn, Parameter, Context);
+
+    if (InitOnce->Ptr == NULL) {
+        InitOnce->Ptr = (PVOID)1;
+        BOOL r = InitFn ? InitFn(InitOnce, Parameter, Context) : TRUE;
+        InitOnce->Ptr = (PVOID)2;
+        return r;
+    } else if (InitOnce->Ptr == (PVOID)1) {
+        volatile LONG* p = (LONG*)&InitOnce->Ptr;
+        while (*p == 1) Sleep(1);
+        return TRUE;
+    } else {
+        return TRUE;
+    }
+}

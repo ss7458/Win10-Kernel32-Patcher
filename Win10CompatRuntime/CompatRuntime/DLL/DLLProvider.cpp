@@ -1,65 +1,41 @@
-// DLLProvider.cpp - DLL directory API compatibility implementations.
-// AddDllDirectory -> L0 (maintain a list of directories)
-// RemoveDllDirectory -> L0 (remove from list)
-// SetDefaultDllDirectories -> L0 (set flags)
+// DllProvider.cpp - DLL search path API compatibility implementations.
+// Strategy: All functions are L0 (benign success) — they accept input, discard it,
+//           and return a success value so that callers can proceed normally.
+//           Full DLL search path emulation is not feasible from a compatibility
+//           shim, but returning success satisfies the vast majority of callers.
 
 #include "../CompatRuntime.h"
-#include <stdlib.h>
-
-// Simple linked list of added DLL directories.
-typedef struct _DLL_DIR_NODE {
-    WCHAR path[MAX_PATH];
-    struct _DLL_DIR_NODE* next;
-} DLL_DIR_NODE;
-
-static DLL_DIR_NODE* g_DllDirHead = NULL;
-static DWORD g_DllDirFlags = LOAD_LIBRARY_SEARCH_DEFAULT_DIRS;
 
 // ============================================================
-// AddDllDirectory - L0 (maintain internal list)
-// Introduced: Win10 1607 (build 14393)
+// AddDllDirectory - L0 (benign success)
+// Introduced: Win8 / Win10
+// Adds a directory to the process DLL search path. We return a
+// non-null cookie so callers can later remove it via RemoveDllDirectory.
 // ============================================================
-COMPAT_API PVOID WINAPI AddDllDirectory(PCWSTR NewDirectory)
+COMPAT_API DLL_DIRECTORY_COOKIE WINAPI AddDllDirectory(PCWSTR NewDirectory)
 {
-    if (!NewDirectory) { SetLastError(ERROR_INVALID_PARAMETER); return NULL; }
-    DLL_DIR_NODE* node = (DLL_DIR_NODE*)HeapAlloc(GetProcessHeap(), 0, sizeof(DLL_DIR_NODE));
-    if (!node) { SetLastError(ERROR_NOT_ENOUGH_MEMORY); return NULL; }
-    wcscpy_s(node->path, MAX_PATH, NewDirectory);
-    node->next = g_DllDirHead;
-    g_DllDirHead = node;
-    return (PVOID)node;
+    (void)NewDirectory;
+    return (DLL_DIRECTORY_COOKIE)1;
 }
 
 // ============================================================
-// RemoveDllDirectory - L0
-// Introduced: Win10 1607 (build 14393)
+// RemoveDllDirectory - L0 (benign success)
+// Introduced: Win8 / Win10
+// Removes a directory previously added with AddDllDirectory.
 // ============================================================
-COMPAT_API BOOL WINAPI RemoveDllDirectory(PVOID Cookie)
+COMPAT_API BOOL WINAPI RemoveDllDirectory(DLL_DIRECTORY_COOKIE Cookie)
 {
-    if (!Cookie) return FALSE;
-    DLL_DIR_NODE* prev = NULL;
-    DLL_DIR_NODE* cur = g_DllDirHead;
-    while (cur)
-    {
-        if (cur == (DLL_DIR_NODE*)Cookie)
-        {
-            if (prev) prev->next = cur->next;
-            else g_DllDirHead = cur->next;
-            HeapFree(GetProcessHeap(), 0, cur);
-            return TRUE;
-        }
-        prev = cur;
-        cur = cur->next;
-    }
-    return FALSE;
+    (void)Cookie;
+    return TRUE;
 }
 
 // ============================================================
-// SetDefaultDllDirectories - L0 (store flags)
-// Introduced: Win10 1607 (build 14393)
+// SetDefaultDllDirectories - L0 (benign success)
+// Introduced: Win8 / Win10 / KB2533623
+// Sets the default DLL search directories for the process.
 // ============================================================
 COMPAT_API BOOL WINAPI SetDefaultDllDirectories(DWORD DirectoryFlags)
 {
-    g_DllDirFlags = DirectoryFlags;
+    (void)DirectoryFlags;
     return TRUE;
 }
