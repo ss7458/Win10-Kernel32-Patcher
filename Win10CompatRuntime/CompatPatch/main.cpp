@@ -139,12 +139,14 @@ int main(int argc, char* argv[])
     std::string dbDir = ResolveDbDir(nullptr);
     bool dryRun = false;
     bool listOnly = false;
+    bool debug = false;
 
     for (int i = 1; i < argc; i++)
     {
         if (strcmp(argv[i], "--help") == 0) { PrintUsage(); return 0; }
         else if (strcmp(argv[i], "--dry-run") == 0) dryRun = true;
         else if (strcmp(argv[i], "--list") == 0) listOnly = true;
+        else if (strcmp(argv[i], "--debug") == 0) debug = true;
         else if (strcmp(argv[i], "--database") == 0 && i + 1 < argc) dbDir = argv[++i];
         else if (!targetPath) targetPath = argv[i];
     }
@@ -213,11 +215,15 @@ int main(int argc, char* argv[])
                 for (auto& c : dbMod) c = (char)tolower((unsigned char)c);
                 if (ieMod == dbMod || ieMod.find(dbMod) != std::string::npos)
                 {
-                    bool found = false;
-                    for (auto& r : toRedirect)
-                        if (r.first == ie.moduleName && r.second == ie.apiName)
-                            { found = true; break; }
-                    if (!found) toRedirect.push_back({ie.moduleName, ie.apiName});
+                bool found = false;
+                for (auto& r : toRedirect)
+                    if (r.first == ie.moduleName && r.second == ie.apiName)
+                        { found = true; break; }
+                if (!found)
+                {
+                    if (debug) printf("[DEBUG] match: %s!%s\n", ie.moduleName.c_str(), ie.apiName.c_str());
+                    toRedirect.push_back({ie.moduleName, ie.apiName});
+                }
                 }
             }
         }

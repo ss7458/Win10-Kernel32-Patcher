@@ -98,7 +98,8 @@ bool PatchCurrentProcess(const char* dbDir)
     if (db.empty())
         return false;
 
-    bool diag = (getenv("COMPAT_DIAG") != nullptr);
+    bool diag = (getenv("COMPAT_DIAG") != nullptr) ||
+                  (getenv("COMPAT_DEBUG") != nullptr);
     int patched = 0;
 
     IMAGE_IMPORT_DESCRIPTOR* desc =

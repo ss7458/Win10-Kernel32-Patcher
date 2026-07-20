@@ -1,29 +1,56 @@
 // ThreadProvider.cpp - Thread API compatibility implementations.
-// Strategy: SetThreadDescription/GetThreadDescription -> L0 (return S_OK/null)
+// Strategy: SetThreadDescription/GetThreadDescription -> L0 (real store/retrieve)
 //           SetThreadInformation/GetThreadInformation -> L2 (dispatch by class)
-
+// 
 #include "../CompatRuntime.h"
+#include <unordered_map>
+#include <string>
+
+// Per-thread description storage, keyed by thread ID. Protected by a SRW lock.
+static SRWLOCK g_tdLock = SRWLOCK_INIT;
+static std::unordered_map<DWORD, std::wstring> g_threadDesc;
 
 // ============================================================
-// SetThreadDescription - L0 (cosmetic, return S_OK)
+// SetThreadDescription - L0 (real store, keyed by thread ID)
 // Introduced: Win10 1607 (build 14393)
 // ============================================================
 COMPAT_API HRESULT WINAPI SetThreadDescription(HANDLE hThread, PCWSTR lpThreadDescription)
 {
-    (void)hThread;
-    (void)lpThreadDescription;
+    DWORD tid = GetThreadId(hThread);
+    if (tid == 0)
+        return HRESULT_FROM_WIN32(GetLastError());
+    std::wstring wstr(lpThreadDescription ? lpThreadDescription : L"");
+    AcquireSRWLockExclusive(&g_tdLock);
+    g_threadDesc[tid] = std::move(wstr);
+    ReleaseSRWLockExclusive(&g_tdLock);
     return S_OK;
 }
 
 // ============================================================
-// GetThreadDescription - L0 (return nullptr, no description)
+// GetThreadDescription - L0 (real retrieve; caller frees with LocalFree)
 // Introduced: Win10 1607 (build 14393)
 // ============================================================
 COMPAT_API HRESULT WINAPI GetThreadDescription(HANDLE hThread, PWSTR* ppszThreadDescription)
 {
-    if (!ppszThreadDescription) return E_INVALIDARG;
+    if (!ppszThreadDescription)
+        return E_INVALIDARG;
     *ppszThreadDescription = nullptr;
-    (void)hThread;
+    DWORD tid = GetThreadId(hThread);
+    if (tid == 0)
+        return HRESULT_FROM_WIN32(GetLastError());
+
+    AcquireSRWLockExclusive(&g_tdLock);
+    auto it = g_threadDesc.find(tid);
+    if (it != g_threadDesc.end())
+    {
+        const std::wstring& s = it->second;
+        SIZE_T bytes = (s.size() + 1) * sizeof(wchar_t);
+        PWSTR buf = (PWSTR)LocalAlloc(LMEM_FIXED, bytes);
+        if (buf)
+            wcscpy_s(buf, s.size() + 1, s.c_str());
+        *ppszThreadDescription = buf;
+    }
+    ReleaseSRWLockExclusive(&g_tdLock);
     return S_OK;
 }
 

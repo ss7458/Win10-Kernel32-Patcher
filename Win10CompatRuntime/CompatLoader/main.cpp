@@ -49,6 +49,7 @@ int main(int argc, char* argv[])
     const char* target = nullptr;
     std::string dbDir = ResolveDbDir(nullptr);
     std::string compat = "CompatRuntime.dll";
+    bool debug = false;
 
     for (int i = 1; i < argc; ++i)
     {
@@ -56,6 +57,8 @@ int main(int argc, char* argv[])
             dbDir = argv[++i];
         else if (!strcmp(argv[i], "--compat") && i + 1 < argc)
             compat = argv[++i];
+        else if (!strcmp(argv[i], "--debug"))
+            debug = true;
         else if (!target)
             target = argv[i];
     }
@@ -84,6 +87,12 @@ int main(int argc, char* argv[])
         _putenv("COMPAT_DIAG=1");
         (void)diagBuf;
     }
+    // --debug: verbose logging. Also tell the injected DLL to log (COMPAT_DEBUG).
+    if (debug)
+    {
+        _putenv("COMPAT_DEBUG=1");
+        printf("[DEBUG] debug logging enabled\n");
+    }
 
     STARTUPINFOA si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
@@ -93,6 +102,7 @@ int main(int argc, char* argv[])
         printf("[ERROR] CreateProcess failed: %lu\n", GetLastError());
         return 1;
     }
+    if (debug) printf("[DEBUG] target suspended (pid=%lu)\n", pi.dwProcessId);
 
     // Inject CompatRuntime.dll into the suspended target via a LoadLibraryA
     // remote thread.
@@ -104,11 +114,13 @@ int main(int argc, char* argv[])
         printf("[ERROR] VirtualAllocEx: %lu\n", GetLastError());
         goto cleanup;
     }
+    if (debug) printf("[DEBUG] remote buffer @ %p (%zu bytes)\n", remote, pathLen);
     if (!WriteProcessMemory(pi.hProcess, remote, absCompat.c_str(), pathLen, nullptr))
     {
         printf("[ERROR] WriteProcessMemory: %lu\n", GetLastError());
         goto cleanup;
     }
+    if (debug) printf("[DEBUG] wrote dll path to target\n");
 
     // LoadLibraryA lives in kernel32.dll, a "known DLL" mapped at the same base
     // address in every process of this session, so its address here is valid
@@ -120,6 +132,7 @@ int main(int argc, char* argv[])
         printf("[ERROR] GetProcAddress(LoadLibraryA) failed\n");
         goto cleanup;
     }
+    if (debug) printf("[DEBUG] LoadLibraryA @ %p\n", pLoadLibraryA);
 
     HANDLE hThread = CreateRemoteThread(pi.hProcess, nullptr, 0,
         reinterpret_cast<LPTHREAD_START_ROUTINE>(pLoadLibraryA),
@@ -129,10 +142,12 @@ int main(int argc, char* argv[])
         printf("[ERROR] CreateRemoteThread: %lu\n", GetLastError());
         goto cleanup;
     }
+    if (debug) printf("[DEBUG] remote thread created\n");
 
     WaitForSingleObject(hThread, INFINITE);
     DWORD loadResult = 0;
     GetExitCodeThread(hThread, &loadResult);
+    if (debug) printf("[DEBUG] LoadLibraryA returned %lu (module)\n", loadResult);
     CloseHandle(hThread);
 
     if (!loadResult)

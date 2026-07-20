@@ -49,6 +49,10 @@
    CompatLoader.exe 老软件.exe
    ```
    工具会自动：挂起启动程序 → 注入 `CompatRuntime.dll` → 改写接口指向 → 恢复运行。原 `老软件.exe` 一个字节都不用改。
+   排错时加 `--debug` 可显示详细日志（注入步骤、重定向了哪些接口、DLL 内部诊断）：
+   ```
+   CompatLoader.exe 老软件.exe --debug
+   ```
 
 ---
 
