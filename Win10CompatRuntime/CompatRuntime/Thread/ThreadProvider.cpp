@@ -55,11 +55,17 @@ COMPAT_API HRESULT WINAPI GetThreadDescription(HANDLE hThread, PWSTR* ppszThread
 }
 
 // ============================================================
-// SetThreadInformation - L2 (dispatch by class)
+// SetThreadInformation - L2 (forward to real API, fallback dispatch by class)
 // Introduced: Win10 1607 (build 14393)
 // ============================================================
 COMPAT_API BOOL WINAPI SetThreadInformation(HANDLE hThread, THREAD_INFORMATION_CLASS ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize)
 {
+    typedef BOOL(WINAPI* PFN)(HANDLE, THREAD_INFORMATION_CLASS, LPVOID, DWORD);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "SetThreadInformation");
+    if (pfn) return pfn(hThread, ThreadInformationClass, lpThreadInformation, dwSize);
+
+    // Fallback for systems without the API: map known classes to thread priority.
     switch (ThreadInformationClass)
     {
     case 0: // MemoryPriority -> SetThreadPriority
@@ -91,11 +97,17 @@ COMPAT_API BOOL WINAPI SetThreadInformation(HANDLE hThread, THREAD_INFORMATION_C
 }
 
 // ============================================================
-// GetThreadInformation - L2 (dispatch by class)
+// GetThreadInformation - L2 (forward to real API, fallback dispatch by class)
 // Introduced: Win10 1607 (build 14393)
 // ============================================================
 COMPAT_API BOOL WINAPI GetThreadInformation(HANDLE hThread, THREAD_INFORMATION_CLASS ThreadInformationClass, LPVOID lpThreadInformation, DWORD dwSize)
 {
+    typedef BOOL(WINAPI* PFN)(HANDLE, THREAD_INFORMATION_CLASS, LPVOID, DWORD);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "GetThreadInformation");
+    if (pfn) return pfn(hThread, ThreadInformationClass, lpThreadInformation, dwSize);
+
+    // Fallback for systems without the API: map known classes to thread priority.
     switch (ThreadInformationClass)
     {
     case 0: // MemoryPriority

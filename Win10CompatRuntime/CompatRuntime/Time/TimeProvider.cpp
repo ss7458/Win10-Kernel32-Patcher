@@ -7,6 +7,9 @@
 // ============================================================
 // GetSystemTimePreciseAsFileTime - L1
 // Introduced: Win8 (build 9200)
+// Forward to real OS implementation when present; on older
+// systems without the API, derive a high-precision time by
+// interpolating system time with QueryPerformanceCounter.
 // ============================================================
 COMPAT_API VOID WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME lpSystemTimeAsFileTime)
 {
@@ -14,7 +17,33 @@ COMPAT_API VOID WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME lpSystemTimeAsF
     static PFN pfn = nullptr;
     if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "GetSystemTimePreciseAsFileTime");
     if (pfn) { pfn(lpSystemTimeAsFileTime); return; }
-    GetSystemTimeAsFileTime(lpSystemTimeAsFileTime);
+
+    // Fallback: interpolate system time using QPC for sub-millisecond precision.
+    static LARGE_INTEGER s_freq = { 0 };
+    static LARGE_INTEGER s_refQpc = { 0 };
+    static ULARGE_INTEGER s_refSys = { 0 };
+    static LONGLONG s_lastAnchor = 0;
+
+    LARGE_INTEGER now;
+    QueryPerformanceCounter(&now);
+
+    if (s_freq.QuadPart == 0 || (now.QuadPart - s_lastAnchor) > s_freq.QuadPart)
+    {
+        if (s_freq.QuadPart == 0) QueryPerformanceFrequency(&s_freq);
+        s_refQpc = now;
+        FILETIME ft;
+        GetSystemTimeAsFileTime(&ft);
+        s_refSys.LowPart = ft.dwLowDateTime;
+        s_refSys.HighPart = ft.dwHighDateTime;
+        s_lastAnchor = now.QuadPart;
+    }
+
+    LONGLONG delta = now.QuadPart - s_refQpc.QuadPart;
+    LONGLONG delta100ns = (delta * 10000000) / s_freq.QuadPart;
+    ULARGE_INTEGER result;
+    result.QuadPart = s_refSys.QuadPart + delta100ns;
+    lpSystemTimeAsFileTime->dwLowDateTime = result.LowPart;
+    lpSystemTimeAsFileTime->dwHighDateTime = result.HighPart;
 }
 
 // ============================================================
