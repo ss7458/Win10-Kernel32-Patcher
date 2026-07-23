@@ -29,5 +29,13 @@ PatchResult PatchImports(
     const std::vector<std::pair<std::string, std::string>>& redirectedAPIs
 );
 
+// Patch the delay-import table of a PE file loaded into memory.
+// redirectedAPIs: pairs of (moduleName, apiName) to redirect to CompatRuntime.dll.
+// Returns the result with counts and any error message.
+PatchResult PatchDelayImports(
+    std::vector<uint8_t>& fileData,
+    const std::vector<std::pair<std::string, std::string>>& redirectedAPIs
+);
+
 // Write the patched data back to the same file (creates a backup first).
 bool WritePatchedFile(const char* filePath, const std::vector<uint8_t>& data);

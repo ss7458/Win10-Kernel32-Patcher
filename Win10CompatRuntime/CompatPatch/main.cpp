@@ -199,7 +199,7 @@ int main(int argc, char* argv[])
     printf("[INFO] Found %zu import entries, %zu delay-import entries.\n\n",
         imports.size(), delayImports.size());
 
-    // Build list of APIs to redirect.
+    // Build list of APIs to redirect (regular imports).
     std::vector<std::pair<std::string, std::string>> toRedirect;
     for (auto& ie : imports)
     {
@@ -229,19 +229,62 @@ int main(int argc, char* argv[])
         }
     }
 
-    if (toRedirect.empty())
+    // Build list of APIs to redirect (delay-imports).
+    std::vector<std::pair<std::string, std::string>> toRedirectDelay;
+    for (auto& ie : delayImports)
+    {
+        for (auto& dbEntry : db)
+        {
+            if (ie.isByName && ie.apiName == dbEntry.name &&
+                dbEntry.strategy == "Runtime")
+            {
+                std::string ieMod = ie.moduleName;
+                std::string dbMod = dbEntry.module;
+                for (auto& c : ieMod) c = (char)tolower((unsigned char)c);
+                for (auto& c : dbMod) c = (char)tolower((unsigned char)c);
+                if (ieMod == dbMod || ieMod.find(dbMod) != std::string::npos)
+                {
+                bool found = false;
+                for (auto& r : toRedirectDelay)
+                    if (r.first == ie.moduleName && r.second == ie.apiName)
+                        { found = true; break; }
+                if (!found)
+                {
+                    if (debug) printf("[DEBUG] delay-import match: %s!%s\n", ie.moduleName.c_str(), ie.apiName.c_str());
+                    toRedirectDelay.push_back({ie.moduleName, ie.apiName});
+                }
+                }
+            }
+        }
+    }
+
+    if (toRedirect.empty() && toRedirectDelay.empty())
     {
         printf("[INFO] No APIs to redirect. File may already be compatible.\n");
         return 0;
     }
 
-    printf("[INFO] APIs to redirect:\n");
-    for (auto& r : toRedirect)
+    if (!toRedirect.empty())
     {
-        printf("  %s!%s -> CompatRuntime.dll!%s\n",
-            r.first.c_str(), r.second.c_str(), r.second.c_str());
+        printf("[INFO] APIs to redirect:\n");
+        for (auto& r : toRedirect)
+        {
+            printf("  %s!%s -> CompatRuntime.dll!%s\n",
+                r.first.c_str(), r.second.c_str(), r.second.c_str());
+        }
+        printf("\n");
     }
-    printf("\n");
+
+    if (!toRedirectDelay.empty())
+    {
+        printf("[INFO] Delay-import APIs to redirect:\n");
+        for (auto& r : toRedirectDelay)
+        {
+            printf("  %s!%s -> CompatRuntime.dll!%s\n",
+                r.first.c_str(), r.second.c_str(), r.second.c_str());
+        }
+        printf("\n");
+    }
 
     if (listOnly) return 0;
 
@@ -251,17 +294,35 @@ int main(int argc, char* argv[])
         return 0;
     }
 
-    // Patch.
-    printf("[INFO] Patching import table...\n");
-    auto result = PatchImports(fileData, toRedirect);
-
-    if (!result.errorMessage.empty() && result.apisRedirected == 0)
+    // Patch regular imports.
+    if (!toRedirect.empty())
     {
-        printf("[ERROR] Patch failed: %s\n", result.errorMessage.c_str());
-        return 1;
+        printf("[INFO] Patching import table...\n");
+        auto result = PatchImports(fileData, toRedirect);
+
+        if (!result.errorMessage.empty() && result.apisRedirected == 0)
+        {
+            printf("[ERROR] Patch failed: %s\n", result.errorMessage.c_str());
+            return 1;
+        }
+
+        printf("[SUCCESS] Redirected %d API(s).\n", result.apisRedirected);
     }
 
-    printf("[SUCCESS] Redirected %d API(s).\n", result.apisRedirected);
+    // Patch delay-imports.
+    if (!toRedirectDelay.empty())
+    {
+        printf("[INFO] Patching delay-import table...\n");
+        auto result = PatchDelayImports(fileData, toRedirectDelay);
+
+        if (!result.errorMessage.empty() && result.apisRedirected == 0)
+        {
+            printf("[ERROR] Delay-import patch failed: %s\n", result.errorMessage.c_str());
+            return 1;
+        }
+
+        printf("[SUCCESS] Redirected %d delay-import API(s).\n", result.apisRedirected);
+    }
 
     // Write output: insert ".patched" before the extension so Windows still
     // recognizes the file as an executable (e.g. "app.exe" → "app.patched.exe").

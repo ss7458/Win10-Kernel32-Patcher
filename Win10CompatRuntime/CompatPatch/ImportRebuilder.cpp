@@ -279,6 +279,262 @@ PatchResult PatchImports(
     return result;
 }
 
+PatchResult PatchDelayImports(
+    std::vector<uint8_t>& fileData,
+    const std::vector<std::pair<std::string, std::string>>& redirectedAPIs)
+{
+    PatchResult result = {};
+    if (fileData.size() < sizeof(IMAGE_DOS_HEADER))
+    {
+        result.errorMessage = "File too small for DOS header";
+        return result;
+    }
+
+    auto* dos = reinterpret_cast<IMAGE_DOS_HEADER*>(fileData.data());
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+    {
+        result.errorMessage = "Invalid DOS signature";
+        return result;
+    }
+
+    auto* nt = reinterpret_cast<IMAGE_NT_HEADERS*>(fileData.data() + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+    {
+        result.errorMessage = "Invalid NT signature";
+        return result;
+    }
+
+    auto* delayDir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+    if (delayDir->VirtualAddress == 0 || delayDir->Size == 0)
+    {
+        result.errorMessage = "No delay-import directory found";
+        return result;
+    }
+
+    // 1. Scan delay imports to find redirected APIs and their IAT/ILT locations.
+    auto delayImports = ScanDelayImports(fileData.data(), nt);
+
+    struct DelayRedirectTarget {
+        uint32_t iatRVA;       // RVA of the original IAT entry (loader writes here)
+        uint32_t iatFileOff;   // file offset of the original IAT entry
+        uint32_t iltFileOff;   // file offset of the original ILT entry (to null it)
+        std::string apiName;
+    };
+    std::vector<DelayRedirectTarget> targets;
+
+    for (auto& ie : delayImports)
+    {
+        if (ie.isByName && IsAPIRedirected(ie.moduleName, ie.apiName, redirectedAPIs))
+        {
+            DelayRedirectTarget t;
+            t.iatRVA = ie.thunkRVA;
+            t.iatFileOff = pe::RvaToFileOffset(nt, ie.thunkRVA);
+            t.iltFileOff = pe::RvaToFileOffset(nt, ie.origThunkRVA);
+            t.apiName = ie.apiName;
+            targets.push_back(t);
+        }
+    }
+
+    if (targets.empty())
+    {
+        result.errorMessage = "No matching APIs found in delay-import table";
+        return result;
+    }
+
+    // Locate the original delay-import descriptor array.
+    auto* origDesc = pe::RvaPtr<IMAGE_DELAYLOAD_DESCRIPTOR>(fileData.data(), nt, delayDir->VirtualAddress);
+    if (!origDesc)
+    {
+        result.errorMessage = "Cannot locate delay-import descriptor array";
+        return result;
+    }
+
+    // 2. Null out each redirected API's ILT entry in the original descriptor.
+    //    This prevents the delay-load helper from trying to resolve the API
+    //    from the original DLL (which would fail on an older OS).
+    for (auto& t : targets)
+    {
+        if (t.iltFileOff)
+        {
+            auto* thunk = reinterpret_cast<IMAGE_THUNK_DATA*>(fileData.data() + t.iltFileOff);
+            thunk->u1.AddressOfData = 0;
+        }
+    }
+
+    // Count original descriptors.
+    int descCount = 0;
+    for (auto* d = origDesc; d->DllNameRVA != 0; d++) descCount++;
+
+    // 3. Build the new section content.
+    const char* compatDllName = "CompatRuntime.dll";
+    size_t dllNameLen = strlen(compatDllName) + 1;
+
+    uint32_t align = nt->OptionalHeader.SectionAlignment;
+    if (align == 0) align = 4096;
+    uint32_t fileAlign = nt->OptionalHeader.FileAlignment;
+    if (fileAlign == 0) fileAlign = 512;
+
+    size_t n = targets.size();
+
+    // Layout (offsets relative to new section start):
+    //   offDescArray      : original descs + n compat descs + sentinel
+    //   offModuleHandles  : n HMODULE slots (8 bytes each on x64)
+    //   offIltArrays      : n private ILT arrays, each [1 entry][null] (16 bytes)
+    //   offNameArea       : n IMAGE_IMPORT_BY_NAME entries
+    //   offDllName        : "CompatRuntime.dll" (shared by all compat descs)
+    size_t offDescArray = 0;
+    size_t descArraySize = (descCount + n + 1) * sizeof(IMAGE_DELAYLOAD_DESCRIPTOR);
+
+    size_t offModuleHandles = pe::AlignUp((uint32_t)(offDescArray + descArraySize), 8);
+    size_t moduleHandlesSize = n * sizeof(ULONG_PTR);
+
+    // Each compat descriptor gets its own 2-thunk ILT (1 entry + null terminator).
+    size_t offIltArrays = pe::AlignUp((uint32_t)(offModuleHandles + moduleHandlesSize), 16);
+    size_t iltArraysSize = n * 2 * sizeof(IMAGE_THUNK_DATA);
+
+    size_t offNameArea = pe::AlignUp((uint32_t)(offIltArrays + iltArraysSize), 16);
+    size_t nameAreaSize = 0;
+    std::vector<size_t> nameOffsets(n);
+    for (size_t i = 0; i < n; i++)
+    {
+        nameOffsets[i] = nameAreaSize;
+        nameAreaSize += 2 + targets[i].apiName.size() + 1; // hint(2) + name + NUL
+    }
+
+    size_t offDllName = pe::AlignUp((uint32_t)(offNameArea + nameAreaSize), 16);
+    size_t totalContent = pe::AlignUp((uint32_t)(offDllName + dllNameLen), 16);
+    size_t totalRaw = pe::AlignUp((uint32_t)totalContent, fileAlign);
+
+    // Find or create .compat section (may already exist from PatchImports).
+    IMAGE_SECTION_HEADER* secTable = IMAGE_FIRST_SECTION(nt);
+    IMAGE_SECTION_HEADER* compatSec = nullptr;
+    for (WORD i = 0; i < nt->FileHeader.NumberOfSections; i++)
+    {
+        if (memcmp(secTable[i].Name, ".compat", 8) == 0)
+        {
+            compatSec = &secTable[i];
+            break;
+        }
+    }
+
+    uint32_t newSecVA;
+    uint32_t newSecFileOffset;
+
+    if (compatSec)
+    {
+        // Extend the existing .compat section.
+        newSecVA = compatSec->VirtualAddress + compatSec->Misc.VirtualSize;
+        newSecFileOffset = compatSec->PointerToRawData + compatSec->SizeOfRawData;
+    }
+    else
+    {
+        // Place new section after the last existing section.
+        IMAGE_SECTION_HEADER* lastSec = &secTable[nt->FileHeader.NumberOfSections - 1];
+        newSecVA = pe::AlignUp(lastSec->VirtualAddress + lastSec->Misc.VirtualSize, align);
+        newSecFileOffset = pe::AlignUp(lastSec->PointerToRawData + lastSec->SizeOfRawData, fileAlign);
+        if (newSecFileOffset == 0)
+            newSecFileOffset = pe::AlignUp((uint32_t)fileData.size(), fileAlign);
+    }
+
+    size_t newFileSize = newSecFileOffset + totalRaw;
+    if (fileData.size() < newFileSize) fileData.resize(newFileSize, 0);
+    uint8_t* secBase = fileData.data() + newSecFileOffset;
+    memset(secBase, 0, totalRaw);
+
+    // CRITICAL: resize() above may have reallocated the underlying buffer,
+    // invalidating every PE pointer obtained before it. Re-derive them.
+    nt = reinterpret_cast<IMAGE_NT_HEADERS*>(fileData.data() + dos->e_lfanew);
+    delayDir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT];
+    secTable = IMAGE_FIRST_SECTION(nt);
+    origDesc = pe::RvaPtr<IMAGE_DELAYLOAD_DESCRIPTOR>(fileData.data(), nt, delayDir->VirtualAddress);
+
+    // Write original descriptors (unmodified) into the new descriptor array.
+    for (int d = 0; d < descCount; d++)
+    {
+        memcpy(secBase + offDescArray + d * sizeof(IMAGE_DELAYLOAD_DESCRIPTOR),
+               &origDesc[d], sizeof(IMAGE_DELAYLOAD_DESCRIPTOR));
+    }
+
+    // Write one CompatRuntime descriptor per redirected API.
+    for (size_t i = 0; i < n; i++)
+    {
+        IMAGE_DELAYLOAD_DESCRIPTOR compatDesc = {};
+        compatDesc.Attributes.AllAttributes = 0;
+        compatDesc.DllNameRVA = (DWORD)(newSecVA + offDllName);
+        compatDesc.ModuleHandleRVA = (DWORD)(newSecVA + offModuleHandles + i * sizeof(ULONG_PTR));
+        compatDesc.ImportAddressTableRVA = targets[i].iatRVA;
+        compatDesc.ImportNameTableRVA = (DWORD)(newSecVA + offIltArrays + i * 2 * sizeof(IMAGE_THUNK_DATA));
+        memcpy(secBase + offDescArray + (descCount + i) * sizeof(IMAGE_DELAYLOAD_DESCRIPTOR),
+               &compatDesc, sizeof(compatDesc));
+    }
+
+    // Write sentinel descriptor.
+    {
+        IMAGE_DELAYLOAD_DESCRIPTOR sentinel = {};
+        memcpy(secBase + offDescArray + (descCount + n) * sizeof(IMAGE_DELAYLOAD_DESCRIPTOR),
+               &sentinel, sizeof(sentinel));
+    }
+
+    // Write private ILT arrays: each [1 entry -> IMAGE_IMPORT_BY_NAME][null].
+    for (size_t i = 0; i < n; i++)
+    {
+        uint8_t* iltBase = secBase + offIltArrays + i * 2 * sizeof(IMAGE_THUNK_DATA);
+        IMAGE_THUNK_DATA entry = {};
+        entry.u1.AddressOfData = (ULONGLONG)(ULONG_PTR)(newSecVA + offNameArea + nameOffsets[i]);
+        memcpy(iltBase, &entry, sizeof(entry));
+        // Second entry is null terminator (already zeroed by memset above).
+    }
+
+    // Write IMAGE_IMPORT_BY_NAME entries (hint + name).
+    for (size_t i = 0; i < n; i++)
+    {
+        uint8_t* namePtr = secBase + offNameArea + nameOffsets[i];
+        uint16_t hint = 0;
+        memcpy(namePtr, &hint, 2);
+        memcpy(namePtr + 2, targets[i].apiName.c_str(), targets[i].apiName.size() + 1);
+    }
+
+    // Write DLL name.
+    memcpy(secBase + offDllName, compatDllName, dllNameLen);
+
+    // 4. Add or extend the section header.
+    if (compatSec)
+    {
+        // Extend existing .compat section.
+        uint32_t neededVS = (newSecVA - compatSec->VirtualAddress) + (uint32_t)totalContent;
+        if (neededVS > compatSec->Misc.VirtualSize)
+            compatSec->Misc.VirtualSize = neededVS;
+        uint32_t neededRaw = (newSecFileOffset - compatSec->PointerToRawData) + (uint32_t)totalRaw;
+        if (neededRaw > compatSec->SizeOfRawData)
+            compatSec->SizeOfRawData = neededRaw;
+    }
+    else
+    {
+        // Add new .compat section header.
+        IMAGE_SECTION_HEADER newSec = {};
+        memcpy(newSec.Name, ".compat", 8);
+        newSec.Misc.VirtualSize = (DWORD)totalContent;
+        newSec.VirtualAddress = newSecVA;
+        newSec.SizeOfRawData = (DWORD)totalRaw;
+        newSec.PointerToRawData = newSecFileOffset;
+        newSec.Characteristics = IMAGE_SCN_CNT_INITIALIZED_DATA | IMAGE_SCN_MEM_READ;
+        memcpy(&secTable[nt->FileHeader.NumberOfSections], &newSec, sizeof(newSec));
+        nt->FileHeader.NumberOfSections++;
+    }
+
+    // 5. Update the delay-import directory to point to the new descriptor array.
+    delayDir->VirtualAddress = (DWORD)(newSecVA + offDescArray);
+    delayDir->Size = (DWORD)((descCount + n + 1) * sizeof(IMAGE_DELAYLOAD_DESCRIPTOR));
+
+    // 6. Update SizeOfImage.
+    uint32_t imageEnd = newSecVA + (uint32_t)totalContent;
+    if (nt->OptionalHeader.SizeOfImage < pe::AlignUp(imageEnd, align))
+        nt->OptionalHeader.SizeOfImage = pe::AlignUp(imageEnd, align);
+
+    result.apisRedirected = (int)n;
+    return result;
+}
+
 bool WritePatchedFile(const char* filePath, const std::vector<uint8_t>& data)
 {
     std::string backupPath = std::string(filePath) + ".bak";
