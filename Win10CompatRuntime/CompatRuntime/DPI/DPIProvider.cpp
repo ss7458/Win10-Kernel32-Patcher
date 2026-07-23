@@ -29,6 +29,7 @@ COMPAT_API UINT WINAPI GetDpiForWindow(HWND hwnd)
 COMPAT_API UINT WINAPI GetDpiForSystem()
 {
     HDC hdc = GetDC(NULL);
+    if (!hdc) return 96;
     UINT dpi = (UINT)GetDeviceCaps(hdc, LOGPIXELSX);
     ReleaseDC(NULL, hdc);
     return dpi ? dpi : 96;

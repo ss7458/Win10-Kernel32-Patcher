@@ -58,7 +58,7 @@ COMPAT_API BOOL WINAPI GetFileInformationByHandleEx(HANDLE hFile, FILE_INFO_BY_H
         out->FileAttributes = info.dwFileAttributes;
         return TRUE;
     }
-    case 4: // FileStandardInfo
+    case 1: // FileStandardInfo (allocation size, EOF, link count, delete pending, directory flag)
     {
         BY_HANDLE_FILE_INFORMATION info = { 0 };
         if (!GetFileInformationByHandle(hFile, &info)) return FALSE;
@@ -69,7 +69,14 @@ COMPAT_API BOOL WINAPI GetFileInformationByHandleEx(HANDLE hFile, FILE_INFO_BY_H
         out->EndOfFile = out->AllocationSize;
         out->NumberOfLinks = info.nNumberOfLinks;
         out->DeletePending = FALSE;
-        out->Directory = FALSE;
+        out->Directory = (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) ? TRUE : FALSE;
+        return TRUE;
+    }
+    case 4: // FileDispositionInfo — read-only fallback, return DeletePending=FALSE
+    {
+        if (dwBufferSize < sizeof(FILE_DISPOSITION_INFO)) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+        FILE_DISPOSITION_INFO* out = (FILE_DISPOSITION_INFO*)lpFileInformation;
+        out->DeleteFile = FALSE; // cannot determine; assume not pending
         return TRUE;
     }
     case 7: // FileStreamInfo — no alternate data stream support; return minimal info
@@ -219,7 +226,7 @@ COMPAT_API BOOL WINAPI SetFileInformationByHandle(HANDLE hFile, FILE_INFO_BY_HAN
 
     switch (FileInformationClass)
     {
-    case 0: // FileBasicInfo — benign no-op (read-only class)
+    case 0: // FileBasicInfo — benign no-op (write class for attributes/times)
     case 5: // FileAllocationInfo — benign no-op
         return TRUE;
     case 3: // FileRenameInfo — write operation, cannot emulate
