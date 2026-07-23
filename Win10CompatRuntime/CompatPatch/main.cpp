@@ -16,6 +16,7 @@
 #include <fstream>
 #include <sstream>
 #include <algorithm>
+#include <map>
 
 struct ApiEntry {
     std::string module;
@@ -199,6 +200,26 @@ int main(int argc, char* argv[])
     printf("[INFO] Found %zu import entries, %zu delay-import entries.\n\n",
         imports.size(), delayImports.size());
 
+    if (debug)
+    {
+        // List all imported modules and their function counts.
+        printf("[DEBUG] === Regular Import Modules ===\n");
+        std::map<std::string, int> modCounts;
+        for (auto& ie : imports) modCounts[ie.moduleName]++;
+        for (auto& [mod, cnt] : modCounts)
+            printf("[DEBUG]   %s: %d functions\n", mod.c_str(), cnt);
+        printf("[DEBUG] === Delay-Import Modules ===\n");
+        modCounts.clear();
+        for (auto& ie : delayImports) modCounts[ie.moduleName]++;
+        for (auto& [mod, cnt] : modCounts)
+            printf("[DEBUG]   %s: %d functions\n", mod.c_str(), cnt);
+        printf("[DEBUG] === Database entries: %zu ===\n", db.size());
+        for (auto& e : db)
+            printf("[DEBUG]   %s!%s (introduced=%d, level=%s)\n",
+                e.module.c_str(), e.name.c_str(), e.introduced, e.level.c_str());
+        printf("\n");
+    }
+
     // Build list of APIs to redirect (regular imports).
     std::vector<std::pair<std::string, std::string>> toRedirect;
     for (auto& ie : imports)
@@ -221,9 +242,13 @@ int main(int argc, char* argv[])
                         { found = true; break; }
                 if (!found)
                 {
-                    if (debug) printf("[DEBUG] match: %s!%s\n", ie.moduleName.c_str(), ie.apiName.c_str());
+                    if (debug) printf("[DEBUG] regular match: %s!%s (db: %s)\n", ie.moduleName.c_str(), ie.apiName.c_str(), dbEntry.module.c_str());
                     toRedirect.push_back({ie.moduleName, ie.apiName});
                 }
+                }
+                else if (debug && ie.apiName == dbEntry.name)
+                {
+                    printf("[DEBUG] module mismatch: exe=%s db=%s api=%s\n", ieMod.c_str(), dbMod.c_str(), ie.apiName.c_str());
                 }
             }
         }
@@ -250,9 +275,13 @@ int main(int argc, char* argv[])
                         { found = true; break; }
                 if (!found)
                 {
-                    if (debug) printf("[DEBUG] delay-import match: %s!%s\n", ie.moduleName.c_str(), ie.apiName.c_str());
+                    if (debug) printf("[DEBUG] delay-import match: %s!%s (db: %s)\n", ie.moduleName.c_str(), ie.apiName.c_str(), dbEntry.module.c_str());
                     toRedirectDelay.push_back({ie.moduleName, ie.apiName});
                 }
+                }
+                else if (debug && ie.apiName == dbEntry.name)
+                {
+                    printf("[DEBUG] delay-import module mismatch: exe=%s db=%s api=%s\n", ieMod.c_str(), dbMod.c_str(), ie.apiName.c_str());
                 }
             }
         }
