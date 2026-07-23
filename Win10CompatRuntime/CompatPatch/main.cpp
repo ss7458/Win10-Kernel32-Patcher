@@ -263,8 +263,15 @@ int main(int argc, char* argv[])
 
     printf("[SUCCESS] Redirected %d API(s).\n", result.apisRedirected);
 
-    // Write output.
-    std::string outPath = std::string(targetPath) + ".patched";
+    // Write output: insert ".patched" before the extension so Windows still
+    // recognizes the file as an executable (e.g. "app.exe" → "app.patched.exe").
+    std::string target(targetPath);
+    std::string outPath;
+    size_t dotPos = target.rfind('.');
+    if (dotPos != std::string::npos)
+        outPath = target.substr(0, dotPos) + ".patched" + target.substr(dotPos);
+    else
+        outPath = target + ".patched";
     printf("[INFO] Writing: %s\n", outPath.c_str());
     if (!pe::WriteFile(outPath.c_str(), fileData))
     {

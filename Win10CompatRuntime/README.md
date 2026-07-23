@@ -87,7 +87,7 @@ cmake --build build --config Release
 1. Build CompatRuntime.dll and CompatPatch.exe
 2. Place CompatRuntime.dll in the same directory as the target program
 3. Run: `CompatPatch.exe target.exe`
-4. The patched file will be saved as `target.exe.patched`
+4. The patched file will be saved as `target.patched.exe`
 
 ## License
 
