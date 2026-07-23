@@ -238,3 +238,158 @@ COMPAT_API BOOL WINAPI FindNextStreamW(HANDLE hFindStream, LPVOID lpFindStreamDa
     SetLastError(ERROR_HANDLE_EOF);
     return FALSE;
 }
+
+// ============================================================
+// OpenFileById - L1 (forward, fallback via NtCreateFile with FileId)
+// Introduced: Win10 1607 (build 14393)
+// Opens a file by its 64-bit FileID on a given volume handle.
+// ============================================================
+
+// FILE_OPEN_BY_FILE_ID is defined in ntifs.h (kernel-mode). Define for user-mode.
+#ifndef FILE_OPEN_BY_FILE_ID
+#define FILE_OPEN_BY_FILE_ID 0x00002000
+#endif
+
+COMPAT_API HANDLE WINAPI OpenFileById(HANDLE hVolumeHint, LPFILE_ID_DESCRIPTOR lpFileId, DWORD dwDesiredAccess,
+    DWORD dwShareMode, LPSECURITY_ATTRIBUTES lpSecurityAttributes, DWORD dwFlagsAndAttributes)
+{
+    typedef HANDLE(WINAPI* PFN)(HANDLE, LPFILE_ID_DESCRIPTOR, DWORD, DWORD, LPSECURITY_ATTRIBUTES, DWORD);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "OpenFileById");
+    if (pfn) return pfn(hVolumeHint, lpFileId, dwDesiredAccess, dwShareMode, lpSecurityAttributes, dwFlagsAndAttributes);
+
+    if (!lpFileId) { SetLastError(ERROR_INVALID_PARAMETER); return INVALID_HANDLE_VALUE; }
+
+    HMODULE ntdll = GetModuleHandleA("ntdll.dll");
+    if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
+    if (!ntdll) { SetLastError(ERROR_NOT_SUPPORTED); return INVALID_HANDLE_VALUE; }
+
+    typedef LONG(NTAPI* NtCreateFile_t)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK,
+        PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+    auto NtCreateFile = (NtCreateFile_t)GetProcAddress(ntdll, "NtCreateFile");
+    if (!NtCreateFile) { SetLastError(ERROR_NOT_SUPPORTED); return INVALID_HANDLE_VALUE; }
+
+    UNICODE_STRING uniName = { 0 };
+    OBJECT_ATTRIBUTES objAttr = { 0 };
+
+    // Extract the 64-bit FileID. Only FileIdType is supported.
+    ULONGLONG fileId = 0;
+    if (lpFileId->Type == FileIdType)
+        fileId = lpFileId->FileId.QuadPart;
+    else
+    {
+        // ObjectIdType and other types not supported in fallback path.
+        SetLastError(ERROR_NOT_SUPPORTED);
+        return INVALID_HANDLE_VALUE;
+    }
+
+    uniName.Length = sizeof(ULONGLONG);
+    uniName.MaximumLength = sizeof(ULONGLONG);
+    uniName.Buffer = (PWSTR)&fileId;
+
+    objAttr.Length = sizeof(OBJECT_ATTRIBUTES);
+    objAttr.RootDirectory = hVolumeHint;
+    objAttr.ObjectName = &uniName;
+    objAttr.Attributes = OBJ_CASE_INSENSITIVE;
+
+    IO_STATUS_BLOCK ioStatus = { 0 };
+    HANDLE hFile = nullptr;
+    ULONG createOptions = FILE_NON_DIRECTORY_FILE | FILE_OPEN_BY_FILE_ID;
+
+    LONG status = NtCreateFile(&hFile, dwDesiredAccess, &objAttr, &ioStatus,
+        nullptr, dwFlagsAndAttributes, dwShareMode, FILE_OPEN, createOptions,
+        nullptr, 0);
+
+    if (status < 0)
+    {
+        typedef ULONG(NTAPI* RtlNtStatusToDosError_t)(LONG);
+        auto pRtlNtStatusToDosError = (RtlNtStatusToDosError_t)GetProcAddress(ntdll, "RtlNtStatusToDosError");
+        if (pRtlNtStatusToDosError)
+            SetLastError(pRtlNtStatusToDosError(status));
+        else
+            SetLastError(ERROR_NOT_SUPPORTED);
+        return INVALID_HANDLE_VALUE;
+    }
+    return hFile;
+}
+
+// ============================================================
+// SetFileIoOverlappedRange - L1 (forward, fallback benign)
+// Introduced: Win10 1607 (build 14393)
+// ============================================================
+COMPAT_API BOOL WINAPI SetFileIoOverlappedRange(HANDLE hFile, PUCHAR OverlappedRange, ULONG Length)
+{
+    typedef BOOL(WINAPI* PFN)(HANDLE, PUCHAR, ULONG);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "SetFileIoOverlappedRange");
+    if (pfn) return pfn(hFile, OverlappedRange, Length);
+
+    // Fallback: not supported on older systems; return TRUE so callers proceed.
+    return TRUE;
+}
+
+// ============================================================
+// GetFileInformationByHandleEx - already implemented above.
+// ============================================================
+
+// ============================================================
+// CopyFileExW - L1 (forward, fallback to CopyFileW with progress callback simulation)
+// Introduced: Win10 1607 (build 14393) [kernelbase variant]
+// ============================================================
+
+// LPPROGRESS_ROUTINE callback reason values (not defined in older SDK headers).
+#ifndef COPYFILE_CALLBACK_CHUNK_STARTED
+#define COPYFILE_CALLBACK_CHUNK_STARTED 0
+#endif
+#ifndef COPYFILE_CALLBACK_CHUNK_FINISHED
+#define COPYFILE_CALLBACK_CHUNK_FINISHED 1
+#endif
+
+COMPAT_API BOOL WINAPI CopyFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName,
+    LPPROGRESS_ROUTINE lpProgressRoutine, LPVOID lpData, LPBOOL pbCancel, DWORD dwCopyFlags)
+{
+    typedef BOOL(WINAPI* PFN)(LPCWSTR, LPCWSTR, LPPROGRESS_ROUTINE, LPVOID, LPBOOL, DWORD);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "CopyFileExW");
+    if (pfn) return pfn(lpExistingFileName, lpNewFileName, lpProgressRoutine, lpData, pbCancel, dwCopyFlags);
+
+    // Fallback: use CopyFileW. If a progress callback is provided, we
+    // simulate a single progress notification (100% complete).
+    BOOL result = CopyFileW(lpExistingFileName, lpNewFileName, dwCopyFlags & COPY_FILE_FAIL_IF_EXISTS);
+    if (result && lpProgressRoutine)
+    {
+        // Get file size for the callback.
+        HANDLE hFile = CreateFileW(lpExistingFileName, GENERIC_READ, FILE_SHARE_READ,
+            nullptr, OPEN_EXISTING, 0, nullptr);
+        if (hFile != INVALID_HANDLE_VALUE)
+        {
+            LARGE_INTEGER size = { 0 };
+            GetFileSizeEx(hFile, &size);
+            lpProgressRoutine(size, size, size, size, 1, COPYFILE_CALLBACK_CHUNK_FINISHED,
+                hFile, hFile, lpData);
+            CloseHandle(hFile);
+        }
+    }
+    return result;
+}
+
+// ============================================================
+// MoveFileExW - L1 (forward, fallback to MoveFileW with flags)
+// Introduced: Win10 1607 (build 14393) [kernelbase variant]
+// ============================================================
+COMPAT_API BOOL WINAPI MoveFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, DWORD dwFlags)
+{
+    typedef BOOL(WINAPI* PFN)(LPCWSTR, LPCWSTR, DWORD);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "MoveFileExW");
+    if (pfn) return pfn(lpExistingFileName, lpNewFileName, dwFlags);
+
+    // Fallback: MoveFileW doesn't support flags. Handle MOVEFILE_REPLACE_EXISTING
+    // by deleting the destination first if needed.
+    if (dwFlags & MOVEFILE_REPLACE_EXISTING)
+    {
+        if (GetFileAttributesW(lpNewFileName) != INVALID_FILE_ATTRIBUTES)
+            DeleteFileW(lpNewFileName);
+    }
+    return MoveFileW(lpExistingFileName, lpNewFileName);
+}

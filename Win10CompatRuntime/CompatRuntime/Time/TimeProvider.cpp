@@ -165,3 +165,59 @@ COMPAT_API ULONGLONG WINAPI GetTickCount64(VOID)
     if (pfn) { return pfn(); }
     return (ULONGLONG)GetTickCount();
 }
+
+// ============================================================
+// GetTempPath2W - L1 (forward, fallback to GetTempPathW)
+// Introduced: Win10 1809 (build 17763)
+// The Ex2 version adds per-user temp path isolation. On older systems
+// the regular temp path is the best we can do.
+// ============================================================
+COMPAT_API DWORD WINAPI GetTempPath2W(DWORD BufferLength, LPWSTR Buffer)
+{
+    typedef DWORD(WINAPI* PFN)(DWORD, LPWSTR);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "GetTempPath2W");
+    if (pfn) return pfn(BufferLength, Buffer);
+
+    // Fallback: identical to GetTempPathW on older systems.
+    return GetTempPathW(BufferLength, Buffer);
+}
+
+// ============================================================
+// GetTempPath2A - L1 (forward, fallback to GetTempPathA)
+// Introduced: Win10 1809 (build 17763)
+// ============================================================
+COMPAT_API DWORD WINAPI GetTempPath2A(DWORD BufferLength, LPSTR Buffer)
+{
+    typedef DWORD(WINAPI* PFN)(DWORD, LPSTR);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "GetTempPath2A");
+    if (pfn) return pfn(BufferLength, Buffer);
+
+    return GetTempPathA(BufferLength, Buffer);
+}
+
+// ============================================================
+// GetSystemTimeAsFileTime - L1 (forward, fallback to GetSystemTime + conversion)
+// This API exists since XP, but some Win10 apps import it from kernelbase
+// which may not exist on older systems. We forward to the real API or
+// use GetSystemTime + SystemTimeToFileTime as a safe fallback.
+//
+// NOTE: We MUST use Compat_GetRealProc to get the real function pointer.
+// Using ::GetSystemTimeAsFileTime() would resolve to this very function
+// (same DLL, same global namespace), causing infinite recursion.
+// ============================================================
+COMPAT_API VOID WINAPI GetSystemTimeAsFileTime(LPFILETIME lpSystemTimeAsFileTime)
+{
+    typedef VOID(WINAPI* PFN)(LPFILETIME);
+    static PFN pfn = nullptr;
+    if (!pfn) pfn = (PFN)Compat_GetRealProc("kernel32", "GetSystemTimeAsFileTime");
+    if (pfn) { pfn(lpSystemTimeAsFileTime); return; }
+
+    // Fallback: this API has existed since XP, so reaching here is unlikely.
+    // Use GetSystemTime + SystemTimeToFileTime for a safe, universally
+    // available fallback.
+    SYSTEMTIME st;
+    GetSystemTime(&st);
+    SystemTimeToFileTime(&st, lpSystemTimeAsFileTime);
+}

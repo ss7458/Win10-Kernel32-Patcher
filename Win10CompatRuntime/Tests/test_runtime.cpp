@@ -32,12 +32,15 @@ TEST(SetThreadDescription_returns_S_OK)
     ASSERT_EQ(hr, S_OK);
 }
 
-TEST(GetThreadDescription_returns_null)
+TEST(GetThreadDescription_returns_stored)
 {
+    // SetThreadDescription was called earlier with "test thread".
+    // Our real implementation stores and retrieves it.
     PWSTR desc = (PWSTR)(uintptr_t)0xDEADBEEF;
     HRESULT hr = GetThreadDescription(GetCurrentThread(), &desc);
     ASSERT_EQ(hr, S_OK);
-    ASSERT(desc == nullptr);
+    ASSERT(desc != nullptr);
+    if (desc) LocalFree(desc);
 }
 
 TEST(GetThreadDescription_null_ptr)
