@@ -199,8 +199,20 @@ COMPAT_API BOOL WINAPI IsProcessInJob(HANDLE hProcess, HANDLE hJob, PBOOL Result
     if (pfn) return pfn(hProcess, hJob, Result);
 
     if (!Result) { SetLastError(ERROR_INVALID_PARAMETER); return FALSE; }
-    // Fallback: use NtQueryInformationProcess with ProcessBasicInformation
-    // to check if the process is in any job. This is a best-effort check.
+
+    // If a specific job handle is provided, we cannot check membership without
+    // the real API. Return FALSE to indicate "not in this job."
+    if (hJob != NULL)
+    {
+        *Result = FALSE;
+        return TRUE;
+    }
+
+    // Fallback for hJob=NULL: check if the process is in ANY job via
+    // NtQueryInformationProcess. Info class 7 is ProcessIsInJob on Vista+.
+    // On pre-Vista (where IsProcessInJob doesn't exist), class 7 is
+    // ProcessDebugPort — but our target is Win10 compat, so this path is
+    // essentially dead code.
     HMODULE ntdll = GetModuleHandleA("ntdll.dll");
     if (!ntdll) ntdll = LoadLibraryA("ntdll.dll");
     if (ntdll)
@@ -209,11 +221,9 @@ COMPAT_API BOOL WINAPI IsProcessInJob(HANDLE hProcess, HANDLE hJob, PBOOL Result
         auto NtQueryInfo = (NtQueryInfo_t)GetProcAddress(ntdll, "NtQueryInformationProcess");
         if (NtQueryInfo)
         {
-            // ProcessBasicInformation = 0, but we need ProcessIsInJob (7)
             ULONG ret = 0;
             ULONGLONG inJob = 0;
-            // ProcessIsInJob = 7
-            LONG st = NtQueryInfo(hProcess, 7, &inJob, sizeof(inJob), &ret);
+            LONG st = NtQueryInfo(hProcess, 7 /*ProcessIsInJob*/, &inJob, sizeof(inJob), &ret);
             if (st == 0)
             {
                 *Result = inJob ? TRUE : FALSE;

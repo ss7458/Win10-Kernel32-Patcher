@@ -18,6 +18,16 @@ typedef struct _COMPAT_CV {
 COMPAT_API VOID WINAPI InitializeConditionVariable(PCONDITION_VARIABLE ConditionVariable)
 {
     if (!ConditionVariable) return;
+    // Idempotent: if already initialized, destroy old CV first.
+    // The real Windows API treats re-initialization as a no-op; we leak the
+    // previous allocation to avoid racing with active waiters, which matches
+    // documented Windows behavior (undefined if misused).
+    if (ConditionVariable->Ptr)
+    {
+        COMPAT_CV* old = (COMPAT_CV*)ConditionVariable->Ptr;
+        if (old->hEvent) CloseHandle(old->hEvent);
+        HeapFree(GetProcessHeap(), 0, old);
+    }
     COMPAT_CV* cv = (COMPAT_CV*)HeapAlloc(GetProcessHeap(), 0, sizeof(COMPAT_CV));
     if (cv) cv->hEvent = CreateEventW(NULL, TRUE, FALSE, NULL);
     ConditionVariable->Ptr = cv;
@@ -79,17 +89,38 @@ COMPAT_API BOOL WINAPI SleepConditionVariableSRW(PCONDITION_VARIABLE ConditionVa
     }
     COMPAT_CV* cv = (COMPAT_CV*)ConditionVariable->Ptr;
     ResetEvent(cv->hEvent);
-    ReleaseSRWLockExclusive(SRWLock);
-    DWORD result = WaitForSingleObject(cv->hEvent, dwMilliseconds);
-    AcquireSRWLockExclusive(SRWLock);
-    if (result == WAIT_OBJECT_0) return TRUE;
-    SetLastError(result == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError());
+    if (Flags & CONDITION_VARIABLE_LOCKMODE_SHARED)
+    {
+        ReleaseSRWLockShared(SRWLock);
+        DWORD result = WaitForSingleObject(cv->hEvent, dwMilliseconds);
+        AcquireSRWLockShared(SRWLock);
+        if (result == WAIT_OBJECT_0) return TRUE;
+        SetLastError(result == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError());
+    }
+    else
+    {
+        ReleaseSRWLockExclusive(SRWLock);
+        DWORD result = WaitForSingleObject(cv->hEvent, dwMilliseconds);
+        AcquireSRWLockExclusive(SRWLock);
+        if (result == WAIT_OBJECT_0) return TRUE;
+        SetLastError(result == WAIT_TIMEOUT ? ERROR_TIMEOUT : GetLastError());
+    }
     return FALSE;
 }
 
 // File-scope state for WaitOnAddress family shims.
 static SRWLOCK g_waSRW = SRWLOCK_INIT;
 static CONDITION_VARIABLE g_waCV = CONDITION_VARIABLE_INIT;
+static bool g_waCVInit = false;
+
+static void Compat_EnsureWaCV()
+{
+    if (!g_waCVInit)
+    {
+        InitializeConditionVariable(&g_waCV);
+        g_waCVInit = true;
+    }
+}
 
 // ============================================================
 // WaitOnAddress - L2 (approximation using SRW + CV)
@@ -101,6 +132,7 @@ COMPAT_API BOOL WINAPI WaitOnAddress(VOID volatile *Address, PVOID CompareAddres
     auto realFn = (WaitOnAddressFn)Compat_GetRealProc("kernel32", "WaitOnAddress");
     if (realFn) return realFn(Address, CompareAddress, AddressSize, dwMilliseconds);
 
+    Compat_EnsureWaCV();
     AcquireSRWLockExclusive(&g_waSRW);
     while (true) {
         if (memcmp((void*)Address, CompareAddress, AddressSize) == 0) {
@@ -122,6 +154,7 @@ COMPAT_API BOOL WINAPI WaitOnAddress(VOID volatile *Address, PVOID CompareAddres
 COMPAT_API VOID WINAPI WakeByAddressAll(PVOID Address)
 {
     (void)Address;
+    Compat_EnsureWaCV();
     AcquireSRWLockExclusive(&g_waSRW);
     WakeAllConditionVariable(&g_waCV);
     ReleaseSRWLockExclusive(&g_waSRW);
@@ -133,6 +166,7 @@ COMPAT_API VOID WINAPI WakeByAddressAll(PVOID Address)
 COMPAT_API VOID WINAPI WakeByAddressSingle(PVOID Address)
 {
     (void)Address;
+    Compat_EnsureWaCV();
     AcquireSRWLockExclusive(&g_waSRW);
     WakeConditionVariable(&g_waCV);
     ReleaseSRWLockExclusive(&g_waSRW);

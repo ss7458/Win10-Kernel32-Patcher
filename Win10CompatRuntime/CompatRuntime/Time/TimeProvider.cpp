@@ -11,6 +11,9 @@
 // systems without the API, derive a high-precision time by
 // interpolating system time with QueryPerformanceCounter.
 // ============================================================
+
+static SRWLOCK s_timeLock = SRWLOCK_INIT;
+
 COMPAT_API VOID WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME lpSystemTimeAsFileTime)
 {
     typedef VOID(WINAPI* PFN)(LPFILETIME);
@@ -27,9 +30,20 @@ COMPAT_API VOID WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME lpSystemTimeAsF
     LARGE_INTEGER now;
     QueryPerformanceCounter(&now);
 
+    AcquireSRWLockExclusive(&s_timeLock);
     if (s_freq.QuadPart == 0 || (now.QuadPart - s_lastAnchor) > s_freq.QuadPart)
     {
-        if (s_freq.QuadPart == 0) QueryPerformanceFrequency(&s_freq);
+        if (s_freq.QuadPart == 0)
+        {
+            // If QPF fails (should never happen on modern Windows), fall back
+            // to plain GetSystemTimeAsFileTime with no interpolation.
+            if (!QueryPerformanceFrequency(&s_freq) || s_freq.QuadPart == 0)
+            {
+                ReleaseSRWLockExclusive(&s_timeLock);
+                GetSystemTimeAsFileTime(lpSystemTimeAsFileTime);
+                return;
+            }
+        }
         s_refQpc = now;
         FILETIME ft;
         GetSystemTimeAsFileTime(&ft);
@@ -42,6 +56,8 @@ COMPAT_API VOID WINAPI GetSystemTimePreciseAsFileTime(LPFILETIME lpSystemTimeAsF
     LONGLONG delta100ns = (delta * 10000000) / s_freq.QuadPart;
     ULARGE_INTEGER result;
     result.QuadPart = s_refSys.QuadPart + delta100ns;
+    ReleaseSRWLockExclusive(&s_timeLock);
+
     lpSystemTimeAsFileTime->dwLowDateTime = result.LowPart;
     lpSystemTimeAsFileTime->dwHighDateTime = result.HighPart;
 }

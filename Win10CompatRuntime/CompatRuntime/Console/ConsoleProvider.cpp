@@ -67,13 +67,12 @@ static bool Compat_IsEmulatedHPCON(HPCON hPC)
 }
 
 // Resolve the context for an emulated handle. Returns nullptr if not ours.
+// NOTE: Caller MUST hold g_ptyLock (shared or exclusive) across the returned
+// pointer's lifetime to prevent use-after-free by a concurrent ClosePseudoConsole.
 static CompatPtyContext* Compat_ResolvePty(HPCON hPC)
 {
-    AcquireSRWLockShared(&g_ptyLock);
     auto it = g_ptyMap.find((UINT_PTR)hPC);
-    CompatPtyContext* ctx = (it != g_ptyMap.end()) ? it->second : nullptr;
-    ReleaseSRWLockShared(&g_ptyLock);
-    return ctx;
+    return (it != g_ptyMap.end()) ? it->second : nullptr;
 }
 
 // ----------------------------------------------------------------------------
@@ -252,13 +251,14 @@ COMPAT_API HRESULT WINAPI ResizePseudoConsole(HPCON hPC, COORD size)
     if (!Compat_IsEmulatedHPCON(hPC) && Compat_ResolveRealConPty())
         return g_pResizePseudoConsole(hPC, size);
 
-    // L1: best-effort resize of the emulated session. We cannot directly
-    // resize a detached console's buffer from another process, but we record
-    // the requested size and return S_OK so the caller proceeds. The child
-    // process's own console buffer remains at its default size.
+    // L1: best-effort resize of the emulated session. Hold the shared lock
+    // across the entire ctx access to prevent use-after-free by a concurrent
+    // ClosePseudoConsole.
+    AcquireSRWLockShared(&g_ptyLock);
     CompatPtyContext* ctx = Compat_ResolvePty(hPC);
-    if (!ctx) return E_HANDLE;
+    if (!ctx) { ReleaseSRWLockShared(&g_ptyLock); return E_HANDLE; }
     ctx->size = size;
+    ReleaseSRWLockShared(&g_ptyLock);
     return S_OK;
 }
 
@@ -275,17 +275,30 @@ COMPAT_API void WINAPI ClosePseudoConsole(HPCON hPC)
         return;
     }
 
-    // L1: tear down the emulated session.
-    CompatPtyContext* ctx = Compat_ResolvePty(hPC);
-    if (!ctx) return;
+    // L1: tear down the emulated session. Hold exclusive lock across the
+    // entire teardown to prevent use-after-free by a concurrent ResizePseudoConsole.
+    CompatPtyContext* ctx = nullptr;
+    AcquireSRWLockExclusive(&g_ptyLock);
+    auto it = g_ptyMap.find((UINT_PTR)hPC);
+    if (it != g_ptyMap.end())
+    {
+        ctx = it->second;
+        g_ptyMap.erase(it);
+    }
+    if (!ctx) { ReleaseSRWLockExclusive(&g_ptyLock); return; }
 
     // Signal the child to exit, then wait briefly.
-    if (ctx->hInputWrite)
+    // Only attempt WriteFile if the child is still running — writing to a
+    // broken pipe can cause hangs or ERROR_BROKEN_PIPE noise.
+    if (ctx->hProcess && ctx->hInputWrite)
     {
-        // Send "exit\r\n" to cmd.exe so it exits cleanly.
-        const char* exitCmd = "exit\r\n";
-        DWORD written = 0;
-        WriteFile(ctx->hInputWrite, exitCmd, (DWORD)strlen(exitCmd), &written, nullptr);
+        DWORD exitCode = 0;
+        if (GetExitCodeProcess(ctx->hProcess, &exitCode) && exitCode == STILL_ACTIVE)
+        {
+            const char* exitCmd = "exit\r\n";
+            DWORD written = 0;
+            WriteFile(ctx->hInputWrite, exitCmd, (DWORD)strlen(exitCmd), &written, nullptr);
+        }
     }
     if (ctx->hProcess)
     {
@@ -299,9 +312,6 @@ COMPAT_API void WINAPI ClosePseudoConsole(HPCON hPC)
     if (ctx->hProcess)    CloseHandle(ctx->hProcess);
     if (ctx->hThread)     CloseHandle(ctx->hThread);
 
-    // Remove from the map and free the context.
-    AcquireSRWLockExclusive(&g_ptyLock);
-    g_ptyMap.erase((UINT_PTR)hPC);
     ReleaseSRWLockExclusive(&g_ptyLock);
     delete ctx;
 }

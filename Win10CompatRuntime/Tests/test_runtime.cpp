@@ -36,11 +36,16 @@ TEST(GetThreadDescription_returns_stored)
 {
     // SetThreadDescription was called earlier with "test thread".
     // Our real implementation stores and retrieves it.
-    PWSTR desc = (PWSTR)(uintptr_t)0xDEADBEEF;
+    // NOTE: GetThreadDescription allocates via LocalAlloc; caller must free.
+    PWSTR desc = nullptr;
     HRESULT hr = GetThreadDescription(GetCurrentThread(), &desc);
     ASSERT_EQ(hr, S_OK);
     ASSERT(desc != nullptr);
-    if (desc) LocalFree(desc);
+    if (desc)
+    {
+        ASSERT(wcscmp(desc, L"test thread") == 0);
+        LocalFree(desc);
+    }
 }
 
 TEST(GetThreadDescription_null_ptr)
@@ -60,9 +65,14 @@ COMPAT_API VOID WINAPI QueryInterruptTimePrecise(PULONGLONG lpInterruptTimePreci
 
 TEST(GetSystemTimePreciseAsFileTime_returns_valid)
 {
-    FILETIME ft = {0};
-    GetSystemTimePreciseAsFileTime(&ft);
-    ASSERT(ft.dwLowDateTime != 0 || ft.dwHighDateTime != 0);
+    FILETIME ft1 = {0}, ft2 = {0};
+    GetSystemTimePreciseAsFileTime(&ft1);
+    ASSERT(ft1.dwLowDateTime != 0 || ft1.dwHighDateTime != 0);
+    // Second call must return >= first (time progresses monotonically).
+    GetSystemTimePreciseAsFileTime(&ft2);
+    ULONGLONG t1 = ((ULONGLONG)ft1.dwHighDateTime << 32) | ft1.dwLowDateTime;
+    ULONGLONG t2 = ((ULONGLONG)ft2.dwHighDateTime << 32) | ft2.dwLowDateTime;
+    ASSERT(t2 >= t1);
 }
 
 TEST(QueryInterruptTimePrecise_returns_nonzero)

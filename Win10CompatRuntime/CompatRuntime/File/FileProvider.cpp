@@ -72,15 +72,17 @@ COMPAT_API BOOL WINAPI GetFileInformationByHandleEx(HANDLE hFile, FILE_INFO_BY_H
         out->Directory = FALSE;
         return TRUE;
     }
-    case 7: // FileStandardInfo (FileSizeInfo alias)
+    case 7: // FileStreamInfo — no alternate data stream support; return minimal info
     {
-        BY_HANDLE_FILE_INFORMATION info = { 0 };
-        if (!GetFileInformationByHandle(hFile, &info)) return FALSE;
-        FILE_STANDARD_INFO* out = (FILE_STANDARD_INFO*)lpFileInformation;
-        if (dwBufferSize < sizeof(FILE_STANDARD_INFO)) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
-        out->AllocationSize.LowPart = info.nFileSizeLow;
-        out->AllocationSize.HighPart = info.nFileSizeHigh;
-        out->EndOfFile = out->AllocationSize;
+        // FILE_STREAM_INFO requires at least enough space for one entry.
+        if (dwBufferSize < sizeof(FILE_STREAM_INFO)) { SetLastError(ERROR_INSUFFICIENT_BUFFER); return FALSE; }
+        FILE_STREAM_INFO* out = (FILE_STREAM_INFO*)lpFileInformation;
+        // Zero the struct (no streams beyond the default).
+        memset(out, 0, sizeof(FILE_STREAM_INFO));
+        out->StreamNameLength = 0;
+        out->StreamSize.QuadPart = 0;
+        out->StreamAllocationSize.QuadPart = 0;
+        out->NextEntryOffset = 0;
         return TRUE;
     }
     default:
@@ -136,6 +138,8 @@ static std::wstring ResolveFinalPathFallback(HANDLE hFile)
     if (nt.empty()) return {};
 
     // Map \Device\HarddiskVolumeN -> drive letter.
+    // QueryDosDeviceW(DOS_name -> NT_path), so we enumerate drive letters
+    // and find which one maps to our NT device path.
     const std::wstring devPrefix = L"\\Device\\HarddiskVolume";
     if (nt.compare(0, devPrefix.size(), devPrefix) != 0)
         return nt; // not a disk file; return raw NT path as best effort
@@ -143,14 +147,33 @@ static std::wstring ResolveFinalPathFallback(HANDLE hFile)
     size_t hv = nt.find(L"HarddiskVolume");
     if (hv == std::wstring::npos) return nt;
     size_t end = nt.find(L'\\', hv);
-    std::wstring volNode = nt.substr(hv, (end == std::wstring::npos) ? std::wstring::npos : end - hv);
+    std::wstring volNode = nt.substr(0, (end == std::wstring::npos) ? std::wstring::npos : end);
 
-    WCHAR drive[4] = { 0 };
-    if (QueryDosDeviceW(volNode.c_str(), drive, 4) == 0)
+    // Enumerate drive letters A:-Z: and find the one whose DOS device name
+    // resolves to the same NT device path.
+    WCHAR driveLetter[4] = { 0 };
+    bool found = false;
+    WCHAR dosDeviceBuf[256] = { 0 };
+    for (wchar_t ch = L'A'; ch <= L'Z'; ++ch)
+    {
+        WCHAR driveName[4] = { ch, L':', L'\0' };
+        if (QueryDosDeviceW(driveName, dosDeviceBuf, ARRAYSIZE(dosDeviceBuf)) != 0)
+        {
+            if (volNode == dosDeviceBuf)
+            {
+                driveLetter[0] = ch;
+                driveLetter[1] = L':';
+                driveLetter[2] = L'\0';
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found)
         return nt; // mapping failed; best effort
 
     std::wstring rest = (end == std::wstring::npos) ? L"" : nt.substr(end);
-    return std::wstring(L"\\\\?\\") + drive + rest;
+    return std::wstring(L"\\\\?\\") + driveLetter + rest;
 }
 
 COMPAT_API DWORD WINAPI GetFinalPathNameByHandleW(HANDLE hFile, LPWSTR lpszFilePath, DWORD cchFilePath, DWORD dwFlags)
@@ -196,11 +219,11 @@ COMPAT_API BOOL WINAPI SetFileInformationByHandle(HANDLE hFile, FILE_INFO_BY_HAN
 
     switch (FileInformationClass)
     {
-    case 0: // FileBasicInfo
-    case 3: // FileRenameInfo
-    case 4: // FileDispositionInfo
-    case 5: // FileAllocationInfo
+    case 0: // FileBasicInfo — benign no-op (read-only class)
+    case 5: // FileAllocationInfo — benign no-op
         return TRUE;
+    case 3: // FileRenameInfo — write operation, cannot emulate
+    case 4: // FileDispositionInfo — write operation, cannot emulate
     default:
         SetLastError(ERROR_NOT_SUPPORTED);
         return FALSE;
@@ -294,7 +317,7 @@ COMPAT_API HANDLE WINAPI OpenFileById(HANDLE hVolumeHint, LPFILE_ID_DESCRIPTOR l
 
     IO_STATUS_BLOCK ioStatus = { 0 };
     HANDLE hFile = nullptr;
-    ULONG createOptions = FILE_NON_DIRECTORY_FILE | FILE_OPEN_BY_FILE_ID;
+    ULONG createOptions = FILE_OPEN_BY_FILE_ID;
 
     LONG status = NtCreateFile(&hFile, dwDesiredAccess, &objAttr, &ioStatus,
         nullptr, dwFlagsAndAttributes, dwShareMode, FILE_OPEN, createOptions,
@@ -385,7 +408,9 @@ COMPAT_API BOOL WINAPI MoveFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFile
     if (pfn) return pfn(lpExistingFileName, lpNewFileName, dwFlags);
 
     // Fallback: MoveFileW doesn't support flags. Handle MOVEFILE_REPLACE_EXISTING
-    // by deleting the destination first if needed.
+    // by deleting the destination first if needed. Note: this is not atomic on
+    // very old systems; on XP+ MoveFileExW always exists in kernel32 so the
+    // fallback path is unlikely to be reached.
     if (dwFlags & MOVEFILE_REPLACE_EXISTING)
     {
         if (GetFileAttributesW(lpNewFileName) != INVALID_FILE_ATTRIBUTES)
